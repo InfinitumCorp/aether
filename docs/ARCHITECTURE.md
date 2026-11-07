@@ -28,7 +28,7 @@ later) is a thin shell that moves opaque byte buffers between transports, the UI
 
 | System | Function (product page) | Status |
 |---|---|---|
-| ÆTHER Mobile MIL™ | Hardened, organization-controlled Android application | **Built**: app shell, hardening, diagnostics. Organization enrollment and managed-device policy not yet |
+| ÆTHER Mobile MIL™ | Hardened, organization-controlled Android application | **Built**: app shell, hardening, diagnostics. Organization enrollment and managed-device policy not yet. A browser client (ÆTHER MIL™ Web, `web/`) runs the same core as WebAssembly and reaches nodes through a local frame bridge |
 | ÆTHER Talk™ | Encrypted messaging, voice, video, files, push-to-talk, on-device AI | **Partial**: 1:1 encrypted text, Key Drop, burner numbers (text). Groups, PTT, voice/video, files, on-device AI not yet |
 | ÆTHER Maps™ | Offline GPS, topographic maps, waypoints, routes | Not started |
 | ÆTHER Radio™ | Interfaces for approved military digital radios | Not started |
