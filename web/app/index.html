@@ -6,25 +6,26 @@
   <title>ÆTHER MIL Web</title>
   <meta name="description" content="ÆTHER MIL browser client: end-to-end encrypted field messaging using the ÆTHER security core compiled to WebAssembly.">
   <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="stylesheet" href="app-shell.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="bar">
-    <a class="brand" href="#" data-nav="home">ÆTHER MIL<sup class="tm">™</sup> <span class="muted">Web</span></a>
-    <nav>
+  <header class="app-bar">
+    <a class="app-wordmark" href="#" data-nav="home">ÆTHER<sup class="tm">™</sup> MIL</a>
+    <nav class="app-nav" aria-label="Main">
       <button class="link" data-nav="home">Home</button>
       <button class="link" data-nav="connect">Connect +</button>
       <button class="link" data-nav="about">Diagnostics</button>
     </nav>
   </header>
 
-  <main id="main">
+  <main id="main" class="app-main">
     <!-- Enrollment -->
     <section id="v-enroll" class="view" hidden>
       <p class="kicker">Military &amp; defense / field communications</p>
-      <h1>ÆTHER MIL<sup class="tm">™</sup></h1>
-      <p class="lede">Create this browser's operator identity. A new X25519 key is generated here, by the same Rust security core that runs in ÆTHER Mobile MIL<sup class="tm">™</sup>, and never leaves this device.</p>
+      <h1>ÆTHER<sup class="tm">™</sup> MIL</h1>
+      <p class="lede">Create this browser's operator identity. A new X25519 key is generated here, by the same Rust security core that runs in ÆTHER<sup class="tm">™</sup> Mobile MIL, and never leaves this device.</p>
       <form id="f-enroll" class="stack">
         <label>Call sign <input id="enroll-name" maxlength="64" required autocomplete="off" placeholder="e.g. Field-Desk"></label>
         <button class="btn-primary" type="submit">Create identity</button>
@@ -34,7 +35,7 @@
     <!-- Home -->
     <section id="v-home" class="view" hidden>
       <p class="kicker">Military &amp; defense / field communications</p>
-      <h1 class="h1-sm">ÆTHER MIL<sup class="tm">™</sup></h1>
+      <h1 class="h1-sm">ÆTHER<sup class="tm">™</sup> MIL</h1>
       <p class="kicker">Secure voice, text &amp; data · hardened communications · field mesh</p>
       <div class="card">
         <p class="kicker">Operator</p>
@@ -95,12 +96,12 @@
       <p class="kicker">Diagnostics</p>
       <h2>Self-test</h2>
       <ol id="diag" class="rows"></ol>
-      <p class="hint">This browser identity is stored in this browser's local storage, not in a hardware keystore. Use ÆTHER Mobile MIL<sup class="tm">™</sup> on a managed device for operational keys.</p>
+      <p class="hint">This browser identity is stored in this browser's local storage, not in a hardware keystore. Use ÆTHER<sup class="tm">™</sup> Mobile MIL on a managed device for operational keys.</p>
       <button class="btn-secondary" id="wipe">Wipe this browser's identity and messages</button>
     </section>
   </main>
 
-  <footer class="foot"><span>ÆTHER MIL<sup class="tm">™</sup> · Infinitum Corporation · <span id="core-ver"></span></span></footer>
+  <footer class="app-footer"><span>ÆTHER<sup class="tm">™</sup> MIL · Infinitum Corporation · <span id="core-ver"></span></span></footer>
 
   <dialog id="dlg-drop">
     <form method="dialog" class="stack">
