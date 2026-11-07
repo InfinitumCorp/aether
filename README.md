@@ -28,8 +28,8 @@ origins, and dials only private-network or loopback addresses. It forwards encry
 sees plaintext.
 
 - Deployed on Vercel (current): https://aether-mil-web.vercel.app (`web/app/vercel.json`; deploy with
-  `cd web/app && vercel deploy --prod`). Public, with no sign-in. The page holds no data and every connection
-  still needs the local bridge. Chrome asks once to allow local network access so the page can reach the
+  `cd web/app && vercel deploy --prod`). Vercel Authentication protects every deployment, production included
+  (`ssoProtection: all`): only members of the Vercel team can open it. Chrome asks once to allow local network access so the page can reach the
   bridge on 127.0.0.1; allow it.
 - Also deployed on Cloudflare Workers (preview, behind Cloudflare Access): https://aether-mil-web.infinitumcorp.workers.dev
   (`web/wrangler.jsonc`; deploy with `cd web && npx wrangler deploy`). ÆTHER has no product domain on Cloudflare yet;
