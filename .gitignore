@@ -1,0 +1,14 @@
+.toolcache/
+sdk-install.log
+core/target/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+android/.kotlin/
+*.iml
+web/wasm/target/
+web/bridge/node_modules/
+.wrangler/
+.cloudflare/

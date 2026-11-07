@@ -1,0 +1,10 @@
+{
+  "name": "aether-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local WebSocket-to-TCP frame relay so the ÆTHER browser app can reach mesh nodes. Forwards opaque Noise frames only.",
+  "type": "module",
+  "main": "bridge.mjs",
+  "scripts": { "start": "node bridge.mjs" },
+  "dependencies": { "ws": "8.18.0" }
+}

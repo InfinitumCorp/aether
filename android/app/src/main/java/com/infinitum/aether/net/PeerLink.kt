@@ -1,0 +1,106 @@
+package com.infinitum.aether.net
+
+import uniffi.aether_core.ChatMessage
+import uniffi.aether_core.Handshake
+import uniffi.aether_core.Identity
+import uniffi.aether_core.Session
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.EOFException
+import java.net.Socket
+
+/**
+ * One encrypted link to a peer over a reliable byte stream (TCP today; mesh
+ * relays later). Frames are `len:u16be | bytes`. The first three frames are
+ * the Noise XX handshake, carrying display names; every frame after that is a
+ * session-encrypted [ChatMessage].
+ */
+class PeerLink private constructor(
+    private val socket: Socket,
+    private val input: DataInputStream,
+    private val output: DataOutputStream,
+    val session: Session,
+    val peerName: String,
+) : AutoCloseable {
+
+    val remoteKey: ByteArray = session.remotePublicKey()
+
+    fun send(message: ChatMessage) {
+        val frame = session.encrypt(message)
+        synchronized(output) { writeFrame(output, frame) }
+    }
+
+    /** Blocks for the next message; throws on EOF, socket error or failed authentication. */
+    fun receive(): ChatMessage = session.decrypt(readFrame(input))
+
+    val remoteAddress: String get() = "${socket.inetAddress.hostAddress}:${socket.port}"
+
+    override fun close() {
+        runCatching { socket.close() }
+        session.destroy()
+    }
+
+    companion object {
+        private const val HANDSHAKE_TIMEOUT_MS = 10_000
+
+        /** Runs the handshake as initiator (we dialed) or responder (we accepted). */
+        /**
+         * [acceptRemote] (initiator only) is checked against the responder's authenticated key after
+         * message 2; if it refuses, the dialer hangs up before message 3, so a wrong peer never
+         * learns the dialer's identity key or name.
+         */
+        fun establish(
+            socket: Socket,
+            identity: Identity,
+            displayName: String,
+            initiator: Boolean,
+            acceptRemote: ((ByteArray) -> Boolean)? = null,
+        ): PeerLink {
+            socket.tcpNoDelay = true
+            socket.soTimeout = HANDSHAKE_TIMEOUT_MS
+            val input = DataInputStream(socket.getInputStream().buffered())
+            val output = DataOutputStream(socket.getOutputStream().buffered())
+            val name = displayName.toByteArray()
+            val hs = if (initiator) Handshake.initiator(identity) else Handshake.responder(identity)
+            try {
+                val peerName: String
+                if (initiator) {
+                    writeFrame(output, hs.writeMessage(ByteArray(0)))     // -> e
+                    peerName = hs.readMessage(readFrame(input)).decodeToString() // <- e, ee, s, es (+name)
+                    if (acceptRemote != null) {
+                        val rk = hs.remotePublicKey()
+                        if (rk == null || !acceptRemote(rk)) throw RemoteRejectedException()
+                    }
+                    writeFrame(output, hs.writeMessage(name))             // -> s, se (+name)
+                } else {
+                    hs.readMessage(readFrame(input))                      // <- e
+                    writeFrame(output, hs.writeMessage(name))             // -> e, ee, s, es (+name)
+                    peerName = hs.readMessage(readFrame(input)).decodeToString() // <- s, se (+name)
+                }
+                val session = hs.finish()
+                socket.soTimeout = 0
+                return PeerLink(socket, input, output, session, peerName.take(64).ifBlank { "Unnamed peer" })
+            } catch (e: Exception) {
+                runCatching { socket.close() }
+                throw e
+            } finally {
+                hs.destroy()
+            }
+        }
+
+        private fun writeFrame(out: DataOutputStream, bytes: ByteArray) {
+            require(bytes.size <= 0xFFFF) { "frame too large" }
+            out.writeShort(bytes.size)
+            out.write(bytes)
+            out.flush()
+        }
+
+        private fun readFrame(input: DataInputStream): ByteArray {
+            val len = try { input.readUnsignedShort() } catch (e: EOFException) { throw EOFException("peer closed") }
+            return ByteArray(len).also { input.readFully(it) }
+        }
+    }
+}
+
+/** The dialed peer authenticated as someone other than expected; the dialer revealed nothing. */
+class RemoteRejectedException : Exception("peer is not the expected key")

@@ -1,0 +1,20 @@
+[package]
+name = "aether-web"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ÆTHER security core for the browser (wasm-bindgen wrapper over aether-core)."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aether-core = { path = "../../core" }
+wasm-bindgen = "=0.2.100"
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

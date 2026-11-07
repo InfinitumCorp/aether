@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ÆTHER MIL Web</title>
+  <meta name="description" content="ÆTHER MIL browser client: end-to-end encrypted field messaging using the ÆTHER security core compiled to WebAssembly.">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="bar">
+    <a class="brand" href="#" data-nav="home">ÆTHER MIL<sup class="tm">™</sup> <span class="muted">Web</span></a>
+    <nav>
+      <button class="link" data-nav="home">Home</button>
+      <button class="link" data-nav="connect">Connect +</button>
+      <button class="link" data-nav="about">Diagnostics</button>
+    </nav>
+  </header>
+
+  <main id="main">
+    <!-- Enrollment -->
+    <section id="v-enroll" class="view" hidden>
+      <p class="kicker">Military &amp; defense / field communications</p>
+      <h1>ÆTHER MIL<sup class="tm">™</sup></h1>
+      <p class="lede">Create this browser's operator identity. A new X25519 key is generated here, by the same Rust security core that runs in ÆTHER Mobile MIL<sup class="tm">™</sup>, and never leaves this device.</p>
+      <form id="f-enroll" class="stack">
+        <label>Call sign <input id="enroll-name" maxlength="64" required autocomplete="off" placeholder="e.g. Field-Desk"></label>
+        <button class="btn-primary" type="submit">Create identity</button>
+      </form>
+    </section>
+
+    <!-- Home -->
+    <section id="v-home" class="view" hidden>
+      <p class="kicker">Military &amp; defense / field communications</p>
+      <h1 class="h1-sm">ÆTHER MIL<sup class="tm">™</sup></h1>
+      <p class="kicker">Secure voice, text &amp; data · hardened communications · field mesh</p>
+      <div class="card">
+        <p class="kicker">Operator</p>
+        <p class="title" id="me-name"></p>
+        <p class="kicker">Identity fingerprint</p>
+        <p class="mono" id="me-fp"></p>
+        <p class="kicker">Bridge</p>
+        <p class="mono" id="me-bridge"></p>
+      </div>
+      <div class="section"><span>01</span> / ÆTHER Talk<sup class="tm">™</sup> · Conversations</div>
+      <ul id="convos" class="rows"></ul>
+      <p id="convos-empty" class="hint">No conversations yet. Use Connect + to reach a node by address or burner number.</p>
+    </section>
+
+    <!-- Connect -->
+    <section id="v-connect" class="view" hidden>
+      <p class="kicker">ÆTHER Mesh<sup class="tm">™</sup></p>
+      <h2>Connect</h2>
+      <p class="lede">Reach an ÆTHER node by its address. Give a burner number too and the session opens only if the node proves that number's key: otherwise this browser hangs up before revealing its identity.</p>
+      <form id="f-connect" class="stack">
+        <label>Node address <input id="c-addr" required placeholder="192.168.0.129:7337" autocomplete="off"></label>
+        <label>Burner number (optional) <input id="c-number" placeholder="ÆN 733 482 9173" autocomplete="off"></label>
+        <label>Local bridge <input id="c-bridge" required autocomplete="off"></label>
+        <p class="hint">Browsers can't open raw TCP connections, so ÆTHER Web reaches nodes through the ÆTHER bridge on this machine (<code>node web/bridge/bridge.mjs</code>). The bridge forwards encrypted frames only.</p>
+        <button class="btn-primary" type="submit">Connect +</button>
+        <p id="c-status" class="status" role="status"></p>
+      </form>
+    </section>
+
+    <!-- Chat -->
+    <section id="v-chat" class="view chat" hidden>
+      <div class="chat-head">
+        <div>
+          <h2 id="chat-name" class="h2-sm"></h2>
+          <p class="kicker"><span id="chat-state"></span></p>
+          <p class="kicker" id="chat-sub"></p>
+        </div>
+        <div class="chat-actions">
+          <button class="link" id="chat-drop">Drop key ↓</button>
+          <button class="link" id="chat-verify">Verify</button>
+          <button class="link" id="chat-reconnect">Reconnect</button>
+        </div>
+      </div>
+      <div id="chat-verify-box" class="card" hidden>
+        <p class="kicker">Safety number: compare with your teammate's screen</p>
+        <p class="mono" id="chat-safety"></p>
+        <button class="btn-secondary" id="chat-mark">Mark verified</button>
+      </div>
+      <ol id="msgs" class="msgs" aria-live="polite"></ol>
+      <form id="f-send" class="send">
+        <input id="send-text" autocomplete="off" placeholder="Encrypted message" maxlength="4000" aria-label="Message">
+        <button class="btn-primary" type="submit">Send</button>
+      </form>
+    </section>
+
+    <!-- Diagnostics -->
+    <section id="v-about" class="view" hidden>
+      <p class="kicker">Diagnostics</p>
+      <h2>Self-test</h2>
+      <ol id="diag" class="rows"></ol>
+      <p class="hint">This browser identity is stored in this browser's local storage, not in a hardware keystore. Use ÆTHER Mobile MIL<sup class="tm">™</sup> on a managed device for operational keys.</p>
+      <button class="btn-secondary" id="wipe">Wipe this browser's identity and messages</button>
+    </section>
+  </main>
+
+  <footer class="foot"><span>ÆTHER MIL<sup class="tm">™</sup> · Infinitum Corporation · <span id="core-ver"></span></span></footer>
+
+  <dialog id="dlg-drop">
+    <form method="dialog" class="stack">
+      <h3>Drop key</h3>
+      <p class="hint">Share your identity key under a codename. It travels end-to-end encrypted; your teammate pins it and can only connect to the holder of this exact key.</p>
+      <label>Codename <input id="drop-code" maxlength="32" required></label>
+      <div class="row-actions">
+        <button class="link" value="cancel">Cancel</button>
+        <button class="link" id="drop-shuffle" type="button">↻ Shuffle</button>
+        <button class="btn-primary" value="send" id="drop-send">Drop ↓</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "aether-web",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8737", "--bind", "127.0.0.1", "--directory", "web/app"],
+      "port": 8737
+    },
+    {
+      "name": "aether-bridge",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["web/bridge/bridge.mjs"],
+      "port": 7340
+    }
+  ]
+}
