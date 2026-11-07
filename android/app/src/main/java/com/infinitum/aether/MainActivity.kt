@@ -29,6 +29,13 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.light(android.graphics.Color.WHITE, android.graphics.Color.WHITE),
             navigationBarStyle = SystemBarStyle.light(android.graphics.Color.WHITE, android.graphics.Color.WHITE),
         )
+        // The "reachable" notification of the background node needs this on Android 13+.
+        // If refused, the node still runs; only the notification is hidden.
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
         val app = application as AetherApp
         setContent {
             AetherTheme {

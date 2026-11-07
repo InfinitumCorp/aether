@@ -16,7 +16,7 @@ class AetherApp : Application() {
     fun ensureNode(): AetherNode? {
         node?.let { return it }
         val profile = store.loadProfile() ?: return null
-        return AetherNode(this, store, profile).also { it.start(); node = it }
+        return AetherNode(this, store, profile).also { it.start(); node = it; NodeService.start(this) }
     }
 
     @Synchronized

@@ -41,7 +41,7 @@ cd web/wasm && cargo build --release --target wasm32-unknown-unknown
 wasm-bindgen --target web --out-dir ../app/pkg --no-typescript target/wasm32-unknown-unknown/release/aether_web.wasm
 ```
 
-- Deploy: `npx wrangler pages deploy web/app --project-name aether-mil --branch main`
+- Deploy: `npx wrangler pages deploy web/app --project-name aether-mil --branch main`. Pushes to `main` that touch `web/app` deploy automatically through `.github/workflows/deploy-web.yml` once the repo has the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
 - Reach a phone over USB without the LAN: `adb forward tcp:7341 tcp:7337`, then connect to `127.0.0.1:7341`.
 
 Limits: the browser identity is kept in the browser's local storage, not a hardware keystore; the browser
@@ -68,6 +68,11 @@ can dial nodes but can't accept inbound connections; it has no burner numbers of
 - **Diagnostics** with an on-device self-test of the security core.
 
 Verified on a TECNO KM4 (Android 15, arm64): all 5 on-device checks pass with TEE-backed keys.
+
+**Staying reachable in the background.** A foreground service keeps the node listening when another app is in
+front. TECNO / Infinix phones (HiOS, XOS) freeze background apps even so: in Phone Master → App launch
+management, set ÆTHER MIL to manage manually and allow it to run in the background. Managed military
+devices should allow-list the app through MDM.
 
 ## Prerequisites (Windows)
 
