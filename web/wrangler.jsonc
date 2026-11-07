@@ -1,0 +1,13 @@
+// ÆTHER MIL Web on Cloudflare Workers (static assets). Preview on workers.dev until a product domain is added.
+{
+  "$schema": "./bridge/node_modules/wrangler/config-schema.json",
+  "name": "aether-mil-web",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": true,
+  "assets": {
+    "directory": "./app",
+    "html_handling": "drop-trailing-slash",
+    "not_found_handling": "single-page-application"
+  }
+}

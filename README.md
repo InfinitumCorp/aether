@@ -11,6 +11,7 @@ link, with ÆTHER Vault™ encrypted storage. See [docs/ARCHITECTURE.md](docs/AR
 for the design and the status of all ten systems.
 
 ```
+supabase/   Backend migrations (schema `aether` in the shared Infinitum Corp project; RLS on every table)
 core/       Rust security core (aether-core): identity, Noise sessions, envelopes, encrypted vault
 android/    ÆTHER Mobile MIL™ — Kotlin + Jetpack Compose; builds the core with cargo-ndk, binds it with UniFFI
 web/        ÆTHER MIL™ Web — the same core compiled to WebAssembly, a browser client and a local bridge
@@ -26,7 +27,9 @@ Browsers can't open raw TCP connections, so the page reaches ÆTHER nodes throug
 origins, and dials only private-network or loopback addresses. It forwards encrypted frames and never
 sees plaintext.
 
-- Deployed (Cloudflare Pages, behind Cloudflare Access): https://aether-mil.pages.dev
+- Deployed (Cloudflare Workers preview, behind Cloudflare Access): https://aether-mil-web.infinitumcorp.workers.dev
+  (`web/wrangler.jsonc`; deploy with `cd web && npx wrangler deploy`). ÆTHER has no product domain on Cloudflare yet;
+  the earlier Pages project https://aether-mil.pages.dev still serves the same build.
 - Run locally:
 
 ```bash

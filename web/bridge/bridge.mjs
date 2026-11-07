@@ -24,6 +24,7 @@ function originAllowed(origin) {
   if (!origin) return false;
   if (EXTRA_ORIGINS.includes(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+\.)*aether-mil\.pages\.dev$/.test(origin)) return true;
+  if (/^https:\/\/([a-z0-9-]+-)?aether-mil-web\.infinitumcorp\.workers\.dev$/.test(origin)) return true;
   try {
     const u = new URL(origin);
     return ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
