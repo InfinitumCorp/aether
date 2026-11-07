@@ -27,7 +27,11 @@ Browsers can't open raw TCP connections, so the page reaches ÆTHER nodes throug
 origins, and dials only private-network or loopback addresses. It forwards encrypted frames and never
 sees plaintext.
 
-- Deployed (Cloudflare Workers preview, behind Cloudflare Access): https://aether-mil-web.infinitumcorp.workers.dev
+- Deployed on Vercel (current): https://aether-mil-web.vercel.app (`web/app/vercel.json`; deploy with
+  `cd web/app && vercel deploy --prod`). Public, with no sign-in. The page holds no data and every connection
+  still needs the local bridge. Chrome asks once to allow local network access so the page can reach the
+  bridge on 127.0.0.1; allow it.
+- Also deployed on Cloudflare Workers (preview, behind Cloudflare Access): https://aether-mil-web.infinitumcorp.workers.dev
   (`web/wrangler.jsonc`; deploy with `cd web && npx wrangler deploy`). ÆTHER has no product domain on Cloudflare yet;
   the earlier Pages project https://aether-mil.pages.dev still serves the same build.
 - Run locally:
