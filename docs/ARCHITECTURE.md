@@ -77,7 +77,7 @@ Built with `--features registry`, `aether-ca` keeps that registry current: `init
 `register-ca` record a CA, `sign --register` records the certificate and enrols the device in
 `aether.devices`, `revoke` and `status` manage serials, and `verify --online` also fails on a
 revoked serial. It calls service-role-only RPC functions in `public`
-(`supabase/migrations/20261108130000_aether_registry_functions.sql`; the `aether` schema itself is
+(`supabase/migrations/20261108130000_aether_registry_functions.sql`, applied 2026-11-08; the `aether` schema itself is
 not exposed to the API) and reads the key from `AETHER_SUPABASE_SERVICE_KEY`.
 Exchanging and enforcing certificates during the handshake is the next step.
 
