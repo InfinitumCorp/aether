@@ -170,6 +170,39 @@ export function decodeKeyDrop(body) {
 }
 
 /**
+ * Verifies an ÆTHER device certificate; returns its label, or throws.
+ * @param {Uint8Array} certificate
+ * @param {Uint8Array} ca_public_key
+ * @param {Uint8Array} device_public_key
+ * @param {number} now_ms
+ * @returns {string}
+ */
+export function verifyDeviceCertificate(certificate, ca_public_key, device_public_key, now_ms) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(ca_public_key, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(device_public_key, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.verifyDeviceCertificate(ptr0, len0, ptr1, len1, ptr2, len2, now_ms);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * @param {Uint8Array} public_key
  * @returns {string}
  */
@@ -456,6 +489,26 @@ export class Handshake {
         return v2;
     }
     /**
+     * @returns {number}
+     */
+    protocolVersion() {
+        const ret = wasm.handshake_protocolVersion(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * Dials with protocol v1 (classical only), for peers that don't speak v2.
+     * @param {Identity} identity
+     * @returns {Handshake}
+     */
+    static initiatorClassic(identity) {
+        _assertClass(identity, Identity);
+        const ret = wasm.handshake_initiatorClassic(identity.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Handshake.__wrap(ret[0]);
+    }
+    /**
      * @returns {Uint8Array | undefined}
      */
     remotePublicKey() {
@@ -689,6 +742,14 @@ export class Session {
         wasm.__wbg_session_free(ptr, 0);
     }
     /**
+     * True when the session keys also depend on an ML-KEM-768 secret.
+     * @returns {boolean}
+     */
+    postQuantum() {
+        const ret = wasm.session_postQuantum(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * @param {Identity} local
      * @returns {string}
      */
@@ -704,6 +765,13 @@ export class Session {
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
         }
+    }
+    /**
+     * @returns {number}
+     */
+    protocolVersion() {
+        const ret = wasm.session_protocolVersion(this.__wbg_ptr);
+        return ret;
     }
     /**
      * @returns {Uint8Array}

@@ -51,8 +51,17 @@ impl Handshake {
     pub fn initiator(identity: &Identity) -> Result<Handshake, JsError> {
         core::Handshake::initiator(identity.0.clone()).map(Handshake).map_err(err)
     }
+    /// Dials with protocol v1 (classical only), for peers that don't speak v2.
+    #[wasm_bindgen(js_name = initiatorClassic)]
+    pub fn initiator_classic(identity: &Identity) -> Result<Handshake, JsError> {
+        core::Handshake::initiator_classic(identity.0.clone()).map(Handshake).map_err(err)
+    }
     pub fn responder(identity: &Identity) -> Result<Handshake, JsError> {
         core::Handshake::responder(identity.0.clone()).map(Handshake).map_err(err)
+    }
+    #[wasm_bindgen(js_name = protocolVersion)]
+    pub fn protocol_version(&self) -> u8 {
+        self.0.protocol_version()
     }
     #[wasm_bindgen(js_name = writeMessage)]
     pub fn write_message(&self, payload: Vec<u8>) -> Result<Vec<u8>, JsError> {
@@ -125,6 +134,15 @@ impl Session {
     pub fn remote_public_key(&self) -> Vec<u8> {
         self.0.remote_public_key()
     }
+    #[wasm_bindgen(js_name = protocolVersion)]
+    pub fn protocol_version(&self) -> u8 {
+        self.0.protocol_version()
+    }
+    /// True when the session keys also depend on an ML-KEM-768 secret.
+    #[wasm_bindgen(js_name = postQuantum)]
+    pub fn post_quantum(&self) -> bool {
+        self.0.post_quantum()
+    }
     #[wasm_bindgen(js_name = remoteFingerprint)]
     pub fn remote_fingerprint(&self) -> String {
         self.0.remote_fingerprint()
@@ -175,4 +193,10 @@ pub struct Drop {
 pub fn decode_key_drop(body: String) -> Result<Drop, JsError> {
     let d = core::decode_key_drop(body).map_err(err)?;
     Ok(Drop { codename: d.codename, name: d.name, public_key: d.public_key, addresses: d.addresses })
+}
+
+/// Verifies an ÆTHER device certificate; returns its label, or throws.
+#[wasm_bindgen(js_name = verifyDeviceCertificate)]
+pub fn verify_device_certificate(certificate: Vec<u8>, ca_public_key: Vec<u8>, device_public_key: Vec<u8>, now_ms: f64) -> Result<String, JsError> {
+    core::verify_device_certificate(certificate, ca_public_key, device_public_key, now_ms as u64).map(|c| c.label).map_err(err)
 }

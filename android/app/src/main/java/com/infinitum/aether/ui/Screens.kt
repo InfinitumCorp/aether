@@ -490,7 +490,7 @@ private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
                 StatusMark(online)
                 Spacer(Modifier.size(8.dp))
                 Kicker(
-                    if (online) "End-to-end encrypted · online" else "Offline",
+                    if (online) "End-to-end encrypted · " + (if (contact?.pq == true) "post-quantum" else "classical") + " · online" else "Offline",
                     color = if (online) Ink else Body,
                     modifier = Modifier.testTag("chat_status"),
                 )
@@ -1110,7 +1110,7 @@ private fun Diagnostics(keyBacking: String, scratchDir: File, onBack: () -> Unit
             SpecRow("Device", APP)
             SpecRow("Security core", coreVersion())
             SpecRow("Hardware-backed keys", keyBacking)
-            SpecRow("ÆTHER Talk™ session", "Noise_XX_25519_ChaChaPoly_BLAKE2s")
+            SpecRow("ÆTHER Talk™ session", "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s + ML-KEM-768 (v1 fallback)")
             SpecRow("ÆTHER Vault™", "XChaCha20-Poly1305")
             SpecRow("Transport", "Wi-Fi / LAN (mesh, radio: planned)")
             Section(2, "Self-test")

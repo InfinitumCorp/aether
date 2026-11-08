@@ -52,6 +52,8 @@ data class NearbyPeer(val serviceName: String, val host: String, val port: Int)
 
 enum class LinkState { CONNECTING, ONLINE, OFFLINE }
 
+private enum class Outcome { DONE, REFUSED, HANDSHAKE_FAILED, UNREACHABLE }
+
 /**
  * The device's ÆTHER node. It runs one listener per local identity: the operator's real
  * identity on [PORT], and one per active burner number on its own port, each advertised on
@@ -177,6 +179,19 @@ class AetherNode(private val context: Context, private val store: Store, val pro
      * peer's key fails [expectKey] (a pinned key) or [expectNumber] (a burner number's key).
      */
     private fun dial(local: Local, host: String, port: Int, expectKey: String? = null, expectNumber: String? = null): Boolean {
+        // Post-quantum first; classical only for a peer that has never completed it with us, so a
+        // broken first attempt can't strip ML-KEM from a known post-quantum contact.
+        val first = dialOnce(local, host, port, expectKey, expectNumber, classic = false)
+        if (first != Outcome.HANDSHAKE_FAILED) return first == Outcome.DONE
+        if (expectKey != null && _contacts.value[convoKey(local.id, expectKey)]?.pq == true) {
+            _events.value = "Post-quantum handshake failed at $host:$port; classical fallback refused for this contact"
+            return false
+        }
+        Log.i(TAG, "post-quantum handshake failed at $host:$port; retrying classical")
+        return dialOnce(local, host, port, expectKey, expectNumber, classic = true) == Outcome.DONE
+    }
+
+    private fun dialOnce(local: Local, host: String, port: Int, expectKey: String?, expectNumber: String?, classic: Boolean): Outcome {
         val sock = Socket()
         try {
             sock.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
@@ -184,9 +199,9 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             Log.w(TAG, "connect $host:$port failed", e)
             runCatching { sock.close() }
             _events.value = "Could not reach $host:$port"
-            return false
+            return Outcome.UNREACHABLE
         }
-        return adopt(sock, initiator = true, local = local, seenAt = "$host:$port", expectKey = expectKey, expectNumber = expectNumber)
+        return adopt(sock, initiator = true, local = local, seenAt = "$host:$port", expectKey = expectKey, expectNumber = expectNumber, classic = classic)
     }
 
     /** Dials a pinned contact at its dropped / last-seen addresses, accepting only its pinned key. */
@@ -227,14 +242,19 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         seenAt: String,
         expectKey: String? = null,
         expectNumber: String? = null,
-    ): Boolean {
-        val accept: ((ByteArray) -> Boolean)? = when {
+        classic: Boolean = false,
+    ): Outcome {
+        val knownPq = { k: ByteArray -> _contacts.value[convoKey(local.id, k.toHex())]?.pq == true }
+        val expected: ((ByteArray) -> Boolean)? = when {
             expectKey != null -> { k -> k.toHex() == expectKey }
             expectNumber != null -> { k -> burnerNumberMatches(expectNumber, k) }
             else -> null
         }
+        // A classical dial also hangs up before message 3 on a contact known to speak post-quantum.
+        val accept: ((ByteArray) -> Boolean)? =
+            if (classic) { k -> (expected?.invoke(k) ?: true) && !knownPq(k) } else expected
         val link = try {
-            PeerLink.establish(sock, local.identity, local.displayName, initiator, accept)
+            PeerLink.establish(sock, local.identity, local.displayName, initiator, accept, classic)
         } catch (e: RemoteRejectedException) {
             runCatching { sock.close() }
             _events.value = if (expectNumber != null) {
@@ -243,31 +263,37 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                 val pin = expectKey?.let { _contacts.value[convoKey(local.id, it)] }
                 "Key mismatch at $seenAt: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
             }
-            return false
+            return Outcome.REFUSED
         } catch (e: Exception) {
             Log.w(TAG, "handshake failed", e)
             _events.value = "Secure handshake failed"
-            return false
+            return Outcome.HANDSHAKE_FAILED
         }
         val key = link.remoteKey.toHex()
         val convo = convoKey(local.id, key)
-        if (isLocalKey(key)) { link.close(); return false }
+        if (isLocalKey(key)) { link.close(); return Outcome.REFUSED }
         if (expectKey != null && key != expectKey) {
             link.close()
             val pin = _contacts.value[convoKey(local.id, expectKey)]
             _events.value = "Key mismatch at $seenAt: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
-            return false
+            return Outcome.REFUSED
         }
         if (expectNumber != null && !burnerNumberMatches(expectNumber, link.remoteKey)) {
             link.close()
             _events.value = "Number mismatch at $seenAt: the peer doesn't hold ${formatNumber(expectNumber)}"
-            return false
+            return Outcome.REFUSED
+        }
+        if (!link.postQuantum && knownPq(link.remoteKey)) {
+            link.close()
+            _events.value = "Refused a classical session at $seenAt: this contact speaks post-quantum"
+            return Outcome.REFUSED
         }
         lastSeen[convo] = seenAt
         links.put(convo, Live(link, local))?.link?.close()
         val known = _contacts.value[convo]
-        if (known == null || known.name != link.peerName) {
-            val c = known?.copy(name = link.peerName) ?: Contact(key, link.peerName, verified = false, via = local.id)
+        if (known == null || known.name != link.peerName || (link.postQuantum && !known.pq)) {
+            val c = known?.copy(name = link.peerName, pq = known.pq || link.postQuantum)
+                ?: Contact(key, link.peerName, verified = false, via = local.id, pq = link.postQuantum)
             persist(c)
             _contacts.update { it + (convo to c) }
         }
@@ -293,7 +319,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             links.remove(convo)?.let { if (it.link === link) setState(convo, LinkState.OFFLINE) else links[convo] = it }
             link.close()
         }
-        return true
+        return Outcome.DONE
     }
 
     suspend fun send(convo: String, text: String): Boolean = withContext(Dispatchers.IO) {

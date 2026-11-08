@@ -103,23 +103,40 @@ class FrameSocket {
 }
 
 /** Dials addr through the bridge and runs the Noise XX handshake as initiator. */
-async function dial(addr, { expectKey = null, expectNumber = null } = {}) {
+class IdentityRefused extends Error {}
+
+// Dials with the hybrid post-quantum handshake (v2) and falls back to classical v1 only for a
+// peer that has never completed v2 with us, so an attacker can't strip ML-KEM from a known
+// post-quantum contact by breaking the first attempt.
+async function dial(addr, opts = {}) {
+  try {
+    return await dialOnce(addr, opts, false);
+  } catch (e) {
+    if (e instanceof IdentityRefused) throw e;
+    const known = opts.expectKey && contacts[opts.expectKey];
+    if (known?.pq) throw new Error('This contact speaks the post-quantum handshake and this attempt did not. Not falling back.');
+    return await dialOnce(addr, opts, true);
+  }
+}
+
+async function dialOnce(addr, { expectKey = null, expectNumber = null } = {}, classic) {
   const fs = new FrameSocket(`${bridgeUrl()}?to=${encodeURIComponent(addr)}`);
   await fs.opened;
-  const hs = core.Handshake.initiator(me.identity);
+  const hs = classic ? core.Handshake.initiatorClassic(me.identity) : core.Handshake.initiator(me.identity);
   try {
-    fs.send(hs.writeMessage(new Uint8Array()));                       // -> e
-    const peerName = dec.decode(hs.readMessage(await fs.next()));     // <- e, ee, s, es (+name)
+    fs.send(hs.writeMessage(new Uint8Array()));                       // -> e (+ ML-KEM key in v2)
+    const peerName = dec.decode(hs.readMessage(await fs.next()));     // <- e, ee, s, es (+ ML-KEM ciphertext, name)
     const rk = hs.remotePublicKey();
     // Check the responder before revealing anything about ourselves (message 3 carries our key and name).
     if (!rk) throw new Error('No remote key');
-    if (expectKey && hex(rk) !== expectKey) throw new Error('That node is not the pinned key. Hung up before revealing this identity.');
-    if (expectNumber && core.burnerNumber(rk) !== expectNumber) throw new Error('That node does not hold this number. Hung up before revealing this identity.');
-    fs.send(hs.writeMessage(enc.encode(me.name)));                    // -> s, se (+name)
+    if (expectKey && hex(rk) !== expectKey) throw new IdentityRefused('That node is not the pinned key. Hung up before revealing this identity.');
+    if (expectNumber && core.burnerNumber(rk) !== expectNumber) throw new IdentityRefused('That node does not hold this number. Hung up before revealing this identity.');
+    if (classic && contacts[hex(rk)]?.pq) throw new IdentityRefused('This contact speaks the post-quantum handshake. Refusing a classical session.');
+    fs.send(hs.writeMessage(enc.encode(me.name)));                    // -> s, se (, psk) (+name)
     const session = hs.finish();
     const k = hex(session.remotePublicKey());
     const prev = contacts[k] || {};
-    contacts[k] = { ...prev, name: (peerName || 'Unnamed peer').slice(0, 64), addr, number: expectNumber || prev.number || null, verified: !!prev.verified };
+    contacts[k] = { ...prev, name: (peerName || 'Unnamed peer').slice(0, 64), addr, number: expectNumber || prev.number || null, verified: !!prev.verified, pq: !!prev.pq || session.postQuantum() };
     saveContacts();
     adopt(k, fs, session);
     return k;
@@ -173,7 +190,8 @@ function renderChat() {
   const l = links.get(k);
   const online = l?.state === 'online';
   $('chat-name').textContent = c.codename ? `${c.name} · ${c.codename}` : c.name;
-  $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (c.verified ? ' · verified' : '');
+  const pq = online ? links.get(current).session.postQuantum() : !!c.pq;
+  $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (pq ? ' · post-quantum' : online ? ' · classical' : '') + (c.verified ? ' · verified' : '');
   $('chat-sub').textContent = [c.number ? 'via ' + core.formatBurnerNumber(c.number) : null, c.pinned ? 'pinned key' : null, c.addr].filter(Boolean).join(' · ');
   $('chat-reconnect').hidden = online;
   $('chat-drop').disabled = !online;
@@ -287,6 +305,20 @@ function renderDiag() {
     const si = i.finish(), sr = r.finish();
     const m = sr.decrypt(si.encrypt(KIND.TEXT, Date.now(), 'ping'));
     return m.body === 'ping' && si.safetyNumber(a) === sr.safetyNumber(b);
+  });
+  check('Post-quantum handshake (X25519 + ML-KEM-768)', () => {
+    const a = core.Identity.generate(), b = core.Identity.generate();
+    const i = core.Handshake.initiator(a), r = core.Handshake.responder(b);
+    r.readMessage(i.writeMessage(new Uint8Array()));
+    i.readMessage(r.writeMessage(new Uint8Array()));
+    r.readMessage(i.writeMessage(new Uint8Array()));
+    const si = i.finish(), sr = r.finish();
+    const c = core.Handshake.initiatorClassic(a), rc = core.Handshake.responder(b);
+    rc.readMessage(c.writeMessage(new Uint8Array()));
+    c.readMessage(rc.writeMessage(new Uint8Array()));
+    rc.readMessage(c.writeMessage(new Uint8Array()));
+    const sc = c.finish();
+    return si.postQuantum() && sr.postQuantum() && !sc.postQuantum() && sr.decrypt(si.encrypt(KIND.TEXT, 0, 'pq')).body === 'pq';
   });
   check('Tampered frame rejected', () => {
     const a = core.Identity.generate(), b = core.Identity.generate();

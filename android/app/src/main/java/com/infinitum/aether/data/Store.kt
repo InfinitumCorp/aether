@@ -23,6 +23,8 @@ data class Contact(
     val codename: String? = null,
     val addresses: List<String> = emptyList(),
     val via: String? = null,
+    /** True once this contact has completed the post-quantum handshake; classical fallback is then refused. */
+    val pq: Boolean = false,
 )
 
 data class StoredMessage(
@@ -65,7 +67,7 @@ val StoredMessage.convo get() = convoKey(via, peerKeyHex)
 object EventLog {
     fun contactJson(c: Contact): JSONObject =
         JSONObject().put("t", "contact").put("k", c.keyHex).put("n", c.name).put("v", c.verified)
-            .put("p", c.pinned).put("c", c.codename ?: "").put("a", JSONArray(c.addresses))
+            .put("p", c.pinned).put("c", c.codename ?: "").put("a", JSONArray(c.addresses)).put("q", c.pq)
 
     fun messageJson(m: StoredMessage): JSONObject =
         JSONObject().put("t", "msg").put("k", m.peerKeyHex).put("o", m.outgoing).put("ts", m.sentAtMs)
@@ -84,6 +86,7 @@ object EventLog {
                     o.optString("c").ifEmpty { null },
                     if (a == null) emptyList() else List(a.length()) { a.getString(it) },
                     via,
+                    o.optBoolean("q"),
                 )
                 contacts[c.convo] = c
             }

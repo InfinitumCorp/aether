@@ -35,7 +35,8 @@ object SelfTest {
             val n2 = r.readMessage(i.writeMessage("alice".toByteArray())).decodeToString()
             require(n1 == "bob" && n2 == "alice") { "payload mismatch" }
             aliceSession = i.finish(); bobSession = r.finish()
-            "3 messages, names exchanged"
+            require(aliceSession!!.postQuantum() && bobSession!!.postQuantum()) { "not post-quantum" }
+            "3 messages, names exchanged, X25519 + ML-KEM-768 (v${aliceSession!!.protocolVersion()})"
         }
         check("Mutual authentication") {
             require(aliceSession!!.remotePublicKey().contentEquals(bob.publicKey()))

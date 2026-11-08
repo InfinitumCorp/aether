@@ -25,6 +25,9 @@ class PeerLink private constructor(
 
     val remoteKey: ByteArray = session.remotePublicKey()
 
+    /** True when the session keys also depend on an ML-KEM-768 secret (protocol v2). */
+    val postQuantum: Boolean = session.postQuantum()
+
     fun send(message: ChatMessage) {
         val frame = session.encrypt(message)
         synchronized(output) { writeFrame(output, frame) }
@@ -43,8 +46,10 @@ class PeerLink private constructor(
     companion object {
         private const val HANDSHAKE_TIMEOUT_MS = 10_000
 
-        /** Runs the handshake as initiator (we dialed) or responder (we accepted). */
         /**
+         * Runs the handshake as initiator (we dialed) or responder (we accepted). A dialer uses the
+         * hybrid post-quantum handshake (v2) unless [classic]; a responder answers either version.
+         *
          * [acceptRemote] (initiator only) is checked against the responder's authenticated key after
          * message 2; if it refuses, the dialer hangs up before message 3, so a wrong peer never
          * learns the dialer's identity key or name.
@@ -55,17 +60,22 @@ class PeerLink private constructor(
             displayName: String,
             initiator: Boolean,
             acceptRemote: ((ByteArray) -> Boolean)? = null,
+            classic: Boolean = false,
         ): PeerLink {
             socket.tcpNoDelay = true
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
             val input = DataInputStream(socket.getInputStream().buffered())
             val output = DataOutputStream(socket.getOutputStream().buffered())
             val name = displayName.toByteArray()
-            val hs = if (initiator) Handshake.initiator(identity) else Handshake.responder(identity)
+            val hs = when {
+                !initiator -> Handshake.responder(identity)
+                classic -> Handshake.initiatorClassic(identity)
+                else -> Handshake.initiator(identity)
+            }
             try {
                 val peerName: String
                 if (initiator) {
-                    writeFrame(output, hs.writeMessage(ByteArray(0)))     // -> e
+                    writeFrame(output, hs.writeMessage(ByteArray(0)))     // -> e (+ ML-KEM key in v2)
                     peerName = hs.readMessage(readFrame(input)).decodeToString() // <- e, ee, s, es (+name)
                     if (acceptRemote != null) {
                         val rk = hs.remotePublicKey()
