@@ -30,6 +30,7 @@ zeroize = "1.8.1"
 ml-kem = { version = "0.2.1", features = ["zeroize"] }
 ed25519-dalek = { version = "2.1.1", features = ["rand_core", "zeroize"] }
 kem = "=0.3.0-pre.0"
+ureq = { version = "2.12.1", default-features = false, features = ["tls"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.14.0"
@@ -40,3 +41,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[features]
+# Lets `aether-ca` talk to the Supabase certificate registry. Off by default so the
+# Android and WebAssembly builds never pull in an HTTP/TLS stack.
+registry = ["dep:ureq"]

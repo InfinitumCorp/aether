@@ -105,6 +105,8 @@ returns 404 on the development network; see `android/settings.gradle.kts`.
 ```bash
 cd core && cargo test          # Rust unit tests (host)
 cd core && cargo run --bin aether-ca -- init --key ca.key   # organization CA (keep ca.key offline)
+# With the Supabase registry (AETHER_SUPABASE_SERVICE_KEY set in your shell, never committed):
+cd core && cargo run --features registry --bin aether-ca -- sign --key ca.key --device <key hex> --label NAME --register
 cd android && ./gradlew assembleDebug
 ```
 

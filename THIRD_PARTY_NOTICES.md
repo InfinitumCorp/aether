@@ -38,6 +38,9 @@ is ÆTHER's own (not X.509).
 | [uniffi](https://github.com/mozilla/uniffi-rs) | 0.28.3 | MPL-2.0 | Kotlin bindings for Android. Used unmodified; its source is available at the link. |
 | [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) | 0.2.100 | MIT OR Apache-2.0 (MIT) | WebAssembly bindings for the browser client |
 | [ws](https://github.com/websockets/ws) | 8.18.0 | MIT | WebSocket server in the local bridge |
+| [ureq](https://github.com/algesten/ureq) | 2.12.1 | MIT OR Apache-2.0 (MIT) | HTTPS client in `aether-ca` (optional `registry` feature only; not in the apps) |
+| [rustls](https://github.com/rustls/rustls) 0.23.46, [webpki-roots](https://github.com/rustls/webpki-roots) 0.26.11 / 1.0.11 | via ureq | Apache-2.0 OR ISC OR MIT (MIT); webpki-roots: CDLA-Permissive-2.0 | TLS for `aether-ca` (registry feature only) |
+| [ring](https://github.com/briansmith/ring) 0.17.14, [rustls-webpki](https://github.com/rustls/webpki) 0.103.16, [untrusted](https://github.com/briansmith/untrusted) 0.9.0 | via rustls | ring: Apache-2.0 AND ISC; the others ISC | Crypto and certificate checks for rustls in `aether-ca` (registry feature only) |
 
 ## Licence texts
 

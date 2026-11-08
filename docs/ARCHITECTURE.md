@@ -73,6 +73,12 @@ offline); `aether-ca sign --key ca.key --device <key hex> --label NAME [--profil
 `verify_device_certificate` to Android and the browser. The registry of CAs and issued serials
 lives in `aether.certificate_authorities` / `aether.device_certificates`
 (`supabase/migrations/20261108120000_aether_device_certificates.sql`, applied 2026-11-08 with the base `aether` schema).
+Built with `--features registry`, `aether-ca` keeps that registry current: `init --register` and
+`register-ca` record a CA, `sign --register` records the certificate and enrols the device in
+`aether.devices`, `revoke` and `status` manage serials, and `verify --online` also fails on a
+revoked serial. It calls service-role-only RPC functions in `public`
+(`supabase/migrations/20261108130000_aether_registry_functions.sql`; the `aether` schema itself is
+not exposed to the API) and reads the key from `AETHER_SUPABASE_SERVICE_KEY`.
 Exchanging and enforcing certificates during the handshake is the next step.
 
 ## Storage (ÆTHER Vault™)
