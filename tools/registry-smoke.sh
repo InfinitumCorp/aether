@@ -9,6 +9,10 @@
 # already set) and never printed or written to disk.
 #
 #   bash tools/registry-smoke.sh
+#
+# Without the key, against the local PostgREST stand-in (tools/registry-mock.py):
+#   python tools/registry-mock.py 54329 &
+#   AETHER_SUPABASE_URL=http://127.0.0.1:54329 AETHER_SUPABASE_SERVICE_KEY=sb_secret_mock bash tools/registry-smoke.sh
 set -uo pipefail
 cd "$(dirname "$0")/../core" || exit 1
 export PATH="$HOME/tools/winlibs/mingw64/bin:$PATH"

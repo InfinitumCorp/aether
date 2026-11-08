@@ -147,10 +147,26 @@ fn registry_status(serial: &str) -> Result<(String, String), String> {
     let raw = registry::rpc("aether_certificate_status", &format!("{{\"p_serial\":{}}}", json_str(serial)))?;
     let status = ["valid", "revoked", "expired", "unknown"]
         .into_iter()
-        .find(|s| raw.contains(&format!("\"status\":\"{s}\"")))
+        .find(|s| json_string_field(&raw, "status").as_deref() == Some(*s))
         .ok_or_else(|| format!("unexpected registry reply: {raw}"))?;
     let row = raw.trim().trim_start_matches('[').trim_end_matches(']').to_owned();
     Ok((status.to_owned(), row))
+}
+
+/// Value of the first `"name": "string"` member in a JSON text, tolerating any whitespace.
+/// A `"name"` inside another string value is escaped (`\"name\"`) and therefore skipped.
+fn json_string_field(raw: &str, name: &str) -> Option<String> {
+    let pat = format!("\"{name}\"");
+    let mut from = 0;
+    while let Some(i) = raw[from..].find(&pat).map(|i| i + from) {
+        from = i + pat.len();
+        if raw[..i].ends_with('\\') {
+            continue;
+        }
+        let rest = raw[from..].trim_start().strip_prefix(':')?.trim_start().strip_prefix('"')?;
+        return rest.find('"').map(|end| rest[..end].to_owned());
+    }
+    None
 }
 
 fn cert_json(c: &DeviceCertificate, extra: &str) -> String {
@@ -272,5 +288,28 @@ fn main() -> ExitCode {
             eprintln!("aether-ca: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::json_string_field;
+
+    #[test]
+    fn reads_status_from_compact_and_spaced_json() {
+        assert_eq!(json_string_field(r#"[{"status":"valid","label":"A"}]"#, "status").as_deref(), Some("valid"));
+        assert_eq!(json_string_field("[{\"status\" : \"revoked\", \"label\": \"A\"}]", "status").as_deref(), Some("revoked"));
+    }
+
+    #[test]
+    fn ignores_escaped_name_inside_another_value() {
+        let raw = r#"[{"label":"x \"status\":\"valid\"","status":"revoked"}]"#;
+        assert_eq!(json_string_field(raw, "status").as_deref(), Some("revoked"));
+    }
+
+    #[test]
+    fn missing_or_non_string_is_none() {
+        assert_eq!(json_string_field(r#"{"label":"A"}"#, "status"), None);
+        assert_eq!(json_string_field(r#"{"status":null}"#, "status"), None);
     }
 }
