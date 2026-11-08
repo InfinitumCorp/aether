@@ -2,6 +2,14 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "cleanUrls": true,
   "trailingSlash": false,
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "www.infinitumaether.app" }],
+      "destination": "https://infinitumaether.app/:path*",
+      "permanent": true
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",

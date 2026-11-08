@@ -25,6 +25,7 @@ function originAllowed(origin) {
   if (EXTRA_ORIGINS.includes(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+\.)*aether-mil\.pages\.dev$/.test(origin)) return true;
   if (/^https:\/\/([a-z0-9-]+-)?aether-mil-web\.infinitumcorp\.workers\.dev$/.test(origin)) return true;
+  if (origin === 'https://infinitumaether.app' || origin === 'https://www.infinitumaether.app') return true;
   if (origin === 'https://aether-mil-web.vercel.app') return true;
   if (/^https:\/\/aether-mil-[a-z0-9]+-i-nfinitum-corporation\.vercel\.app$/.test(origin)) return true;
   try {
