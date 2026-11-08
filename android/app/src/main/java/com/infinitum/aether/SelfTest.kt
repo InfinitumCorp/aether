@@ -56,6 +56,16 @@ object SelfTest {
             frame[frame.size - 1] = (frame[frame.size - 1].toInt() xor 1).toByte()
             try { bobSession!!.decrypt(frame); error("tampered frame accepted") } catch (e: AetherException.Decrypt) { "authentication failure raised" }
         }
+        check("Device certificate") {
+            val ca = uniffi.aether_core.CertificateAuthority.generate()
+            val cert = ca.issue(alice.publicKey(), "SELF-TEST", uniffi.aether_core.CertProfile.NODE, 0UL, ULong.MAX_VALUE)
+            val hello = uniffi.aether_core.decodeHello(uniffi.aether_core.encodeHello("alice", cert))
+            val ok = uniffi.aether_core.checkPeerCertificate(hello.certificate, listOf(ca.publicKey()), alice.publicKey(), System.currentTimeMillis().toULong())
+            val replayed = uniffi.aether_core.checkPeerCertificate(hello.certificate, listOf(ca.publicKey()), bob.publicKey(), System.currentTimeMillis().toULong())
+            require(ok.status == uniffi.aether_core.PeerCertStatus.VALID) { ok.reason }
+            require(replayed.status == uniffi.aether_core.PeerCertStatus.INVALID) { "replayed certificate accepted" }
+            "issued, carried in the hello, verified; replay by another key refused"
+        }
         check("Vault persistence") {
             val f = File(scratch, "selftest.vault").apply { delete() }
             val key = ByteArray(32) { 7 }

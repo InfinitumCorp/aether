@@ -95,6 +95,17 @@
       <p class="kicker">Diagnostics</p>
       <h2>Self-test</h2>
       <ol id="diag" class="rows"></ol>
+
+      <div class="card stack" id="certs">
+        <p class="kicker">Device certificate</p>
+        <p class="hint">An ÆTHER CA (<span class="mono">aether-ca</span>) signs this browser's identity key. Peers that trust the CA see it as certified.</p>
+        <label>This browser's identity key <input id="cert-mykey" class="mono" readonly></label>
+        <label>Certificate (hex, from <span class="mono">aether-ca sign --device …</span>) <input id="cert-mine" class="mono" autocomplete="off" spellcheck="false"></label>
+        <label>Trusted CA public keys (hex, comma separated) <input id="cert-cas" class="mono" autocomplete="off" spellcheck="false"></label>
+        <label class="check"><input type="checkbox" id="cert-require"> Hang up on peers without a valid certificate from a trusted CA</label>
+        <p class="status" id="cert-status"></p>
+        <div class="row-actions"><button class="btn-primary" id="cert-save" type="button">Save</button></div>
+      </div>
       <p class="hint">This browser identity is stored in this browser's local storage, not in a hardware keystore. Use ÆTHER Mobile MIL<sup class="tm">™</sup> on a managed device for operational keys.</p>
       <button class="btn-secondary" id="wipe">Wipe this browser's identity and messages</button>
     </section>

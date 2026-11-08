@@ -129,6 +129,59 @@ function passArray8ToWasm0(arg, malloc) {
     return ptr;
 }
 
+function takeFromExternrefTable0(idx) {
+    const value = wasm.__wbindgen_export_2.get(idx);
+    wasm.__externref_table_dealloc(idx);
+    return value;
+}
+/**
+ * @param {Uint8Array} payload
+ * @returns {Hello}
+ */
+export function decodeHello(payload) {
+    const ptr0 = passArray8ToWasm0(payload, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeHello(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Hello.__wrap(ret[0]);
+}
+
+/**
+ * Decodes a certificate without verifying it (to show what was imported).
+ * @param {Uint8Array} certificate
+ * @returns {CertInfo}
+ */
+export function decodeDeviceCertificate(certificate) {
+    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeDeviceCertificate(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return CertInfo.__wrap(ret[0]);
+}
+
+/**
+ * Checks a peer's certificate (empty = none) against trusted CA keys (concatenated 32-byte keys).
+ * @param {Uint8Array} certificate
+ * @param {Uint8Array} trusted_ca_keys
+ * @param {Uint8Array} peer_public_key
+ * @param {number} now_ms
+ * @returns {PeerCert}
+ */
+export function checkPeerCertificate(certificate, trusted_ca_keys, peer_public_key, now_ms) {
+    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(trusted_ca_keys, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(peer_public_key, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.checkPeerCertificate(ptr0, len0, ptr1, len1, ptr2, len2, now_ms);
+    return PeerCert.__wrap(ret);
+}
+
 function getArrayJsValueFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     const mem = getDataViewMemory0();
@@ -148,12 +201,6 @@ function passArrayJsValueToWasm0(array, malloc) {
     }
     WASM_VECTOR_LEN = array.length;
     return ptr;
-}
-
-function takeFromExternrefTable0(idx) {
-    const value = wasm.__wbindgen_export_2.get(idx);
-    wasm.__externref_table_dealloc(idx);
-    return value;
 }
 /**
  * @param {string} body
@@ -200,6 +247,26 @@ export function verifyDeviceCertificate(certificate, ca_public_key, device_publi
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
     }
+}
+
+/**
+ * Encodes the handshake hello: display name plus this device's certificate (empty = none).
+ * @param {string} name
+ * @param {Uint8Array} certificate
+ * @returns {Uint8Array}
+ */
+export function encodeHello(name, certificate) {
+    const ptr0 = passStringToWasm0(name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.encodeHello(ptr0, len0, ptr1, len1);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 
 /**
@@ -316,6 +383,155 @@ export function encodeKeyDrop(codename, name, public_key, addresses) {
 function _assertClass(instance, klass) {
     if (!(instance instanceof klass)) {
         throw new Error(`expected instance of ${klass.name}`);
+    }
+}
+
+const CertInfoFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_certinfo_free(ptr >>> 0, 1));
+
+export class CertInfo {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(CertInfo.prototype);
+        obj.__wbg_ptr = ptr;
+        CertInfoFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        CertInfoFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_certinfo_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get label() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_certinfo_label(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set label(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_label(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get profile() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_certinfo_profile(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set profile(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_profile(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get serial() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_certinfo_serial(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set serial(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_serial(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {Uint8Array}
+     */
+    get devicePublicKey() {
+        const ret = wasm.__wbg_get_certinfo_devicePublicKey(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * @param {Uint8Array} arg0
+     */
+    set devicePublicKey(arg0) {
+        const ptr0 = passArray8ToWasm0(arg0, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_devicePublicKey(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {number}
+     */
+    get notAfterMs() {
+        const ret = wasm.__wbg_get_certinfo_notAfterMs(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @param {number} arg0
+     */
+    set notAfterMs(arg0) {
+        wasm.__wbg_set_certinfo_notAfterMs(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {string}
+     */
+    get caKeyId() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_certinfo_caKeyId(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set caKeyId(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_caKeyId(this.__wbg_ptr, ptr0, len0);
     }
 }
 
@@ -556,6 +772,75 @@ export class Handshake {
     }
 }
 
+const HelloFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_hello_free(ptr >>> 0, 1));
+
+export class Hello {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(Hello.prototype);
+        obj.__wbg_ptr = ptr;
+        HelloFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        HelloFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_hello_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get name() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_hello_name(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set name(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_drop_codename(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * Empty when the peer sent no certificate.
+     * @returns {Uint8Array}
+     */
+    get certificate() {
+        const ret = wasm.__wbg_get_hello_certificate(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Empty when the peer sent no certificate.
+     * @param {Uint8Array} arg0
+     */
+    set certificate(arg0) {
+        const ptr0 = passArray8ToWasm0(arg0, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_drop_name(this.__wbg_ptr, ptr0, len0);
+    }
+}
+
 const IdentityFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_identity_free(ptr >>> 0, 1));
@@ -682,14 +967,14 @@ export class Message {
      * @returns {number}
      */
     get sentAtMs() {
-        const ret = wasm.__wbg_get_message_sentAtMs(this.__wbg_ptr);
+        const ret = wasm.__wbg_get_certinfo_notAfterMs(this.__wbg_ptr);
         return ret;
     }
     /**
      * @param {number} arg0
      */
     set sentAtMs(arg0) {
-        wasm.__wbg_set_message_sentAtMs(this.__wbg_ptr, arg0);
+        wasm.__wbg_set_certinfo_notAfterMs(this.__wbg_ptr, arg0);
     }
     /**
      * @returns {string}
@@ -712,7 +997,151 @@ export class Message {
     set body(arg0) {
         const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.__wbg_set_message_body(this.__wbg_ptr, ptr0, len0);
+        wasm.__wbg_set_certinfo_label(this.__wbg_ptr, ptr0, len0);
+    }
+}
+
+const PeerCertFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_peercert_free(ptr >>> 0, 1));
+
+export class PeerCert {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(PeerCert.prototype);
+        obj.__wbg_ptr = ptr;
+        PeerCertFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        PeerCertFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_peercert_free(ptr, 0);
+    }
+    /**
+     * "absent", "valid", "untrusted" or "invalid".
+     * @returns {string}
+     */
+    get status() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_peercert_status(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * "absent", "valid", "untrusted" or "invalid".
+     * @param {string} arg0
+     */
+    set status(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_drop_codename(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get label() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_peercert_label(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set label(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_drop_name(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get profile() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_peercert_profile(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set profile(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_drop_publicKey(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get serial() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_peercert_serial(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set serial(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_peercert_serial(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get reason() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_peercert_reason(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set reason(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_peercert_reason(this.__wbg_ptr, ptr0, len0);
     }
 }
 

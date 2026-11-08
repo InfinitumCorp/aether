@@ -33,7 +33,12 @@ import uniffi.aether_core.ChatMessage
 import uniffi.aether_core.Identity
 import uniffi.aether_core.KeyDrop
 import uniffi.aether_core.MessageKind
+import uniffi.aether_core.PeerCertStatus
+import uniffi.aether_core.PeerCertificate
 import uniffi.aether_core.burnCodeHash
+import uniffi.aether_core.checkPeerCertificate
+import uniffi.aether_core.decodeDeviceCertificate
+import uniffi.aether_core.encodeHello
 import uniffi.aether_core.burnerNumber
 import uniffi.aether_core.burnerNumberMatches
 import uniffi.aether_core.decodeKeyDrop
@@ -53,6 +58,13 @@ data class NearbyPeer(val serviceName: String, val host: String, val port: Int)
 enum class LinkState { CONNECTING, ONLINE, OFFLINE }
 
 private enum class Outcome { DONE, REFUSED, HANDSHAKE_FAILED, UNREACHABLE }
+
+/**
+ * Device-certificate settings for the real identity: this device's certificate (hex, from
+ * `aether-ca sign`), the CA public keys it trusts, and whether peers without a valid certificate
+ * are refused. Burner-number sessions never send the certificate, which would unmask the operator.
+ */
+data class CertSettings(val mine: String = "", val cas: List<String> = emptyList(), val require: Boolean = false)
 
 /**
  * The device's ÆTHER node. It runs one listener per local identity: the operator's real
@@ -96,6 +108,44 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     val linkStates: StateFlow<Map<String, LinkState>> = _linkStates.asStateFlow()
     private val _nearby = MutableStateFlow<Map<String, NearbyPeer>>(emptyMap())
     val nearby: StateFlow<Map<String, NearbyPeer>> = _nearby.asStateFlow()
+    private val certPrefs = context.getSharedPreferences("aether.certs", Context.MODE_PRIVATE)
+    private val _certSettings = MutableStateFlow(
+        CertSettings(
+            certPrefs.getString("mine", "") ?: "",
+            (certPrefs.getString("cas", "") ?: "").split(',').filter { it.length == 64 },
+            certPrefs.getBoolean("require", false),
+        ),
+    )
+    val certSettings: StateFlow<CertSettings> = _certSettings.asStateFlow()
+    /** The certificate each live conversation's peer presented, as checked when it connected. */
+    private val _peerCerts = MutableStateFlow<Map<String, PeerCertificate>>(emptyMap())
+    val peerCerts: StateFlow<Map<String, PeerCertificate>> = _peerCerts.asStateFlow()
+
+    /** Validates and stores certificate settings; returns a status line for the screen. */
+    fun saveCertSettings(mine: String, casText: String, require: Boolean): Result<String> = runCatching {
+        val cert = mine.trim().lowercase()
+        val cas = casText.split(',', ' ', '\n').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
+        require(cas.all { it.length == 64 && it.all { c -> c in '0'..'9' || c in 'a'..'f' } }) { "Each CA key is 64 hex characters" }
+        var line = "No certificate: peers see this device as uncertified."
+        if (cert.isNotEmpty()) {
+            require(cert.length % 2 == 0 && cert.all { c -> c in '0'..'9' || c in 'a'..'f' }) { "The certificate must be hex" }
+            val info = runCatching { decodeDeviceCertificate(cert.hexToBytes()) }.getOrElse { error("That is not an ÆTHER device certificate") }
+            require(info.devicePublicKey.toHex() == main.keyHex) { "That certificate is for a different key, not this device's" }
+            val own = checkPeerCertificate(cert.hexToBytes(), cas.map { it.hexToBytes() }, info.devicePublicKey, System.currentTimeMillis().toULong())
+            line = when (own.status) {
+                PeerCertStatus.VALID -> "Certified as ${info.label} (${info.profile.name.lowercase()})."
+                PeerCertStatus.UNTRUSTED -> "Certificate for ${info.label}; add its CA key to check it here."
+                else -> error("This certificate is not usable: ${own.reason}")
+            }
+        }
+        certPrefs.edit().putString("mine", cert).putString("cas", cas.joinToString(",")).putBoolean("require", require).apply()
+        _certSettings.value = CertSettings(cert, cas, require)
+        line
+    }
+
+    private fun checkCert(hello: uniffi.aether_core.Hello, key: ByteArray): PeerCertificate =
+        checkPeerCertificate(hello.certificate, _certSettings.value.cas.map { it.hexToBytes() }, key, System.currentTimeMillis().toULong())
+
     private val _events = MutableStateFlow<String?>(null)
     val events: StateFlow<String?> = _events.asStateFlow()
 
@@ -250,14 +300,24 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             expectNumber != null -> { k -> burnerNumberMatches(expectNumber, k) }
             else -> null
         }
-        // A classical dial also hangs up before message 3 on a contact known to speak post-quantum.
-        val accept: ((ByteArray) -> Boolean)? =
-            if (classic) { k -> (expected?.invoke(k) ?: true) && !knownPq(k) } else expected
+        // Certificates belong to the real identity only: a burner session sends none and requires none.
+        val cfg = _certSettings.value
+        val requireCert = cfg.require && local.id == null
+        val hello = encodeHello(local.displayName, if (local.id == null && cfg.mine.isNotEmpty()) cfg.mine.hexToBytes() else null)
+        var certRefusal: PeerCertificate? = null
+        // Checked after message 2: a classical dial also hangs up on a contact known to speak
+        // post-quantum, and a dial that requires certificates hangs up on an uncertified peer.
+        val accept: (ByteArray, uniffi.aether_core.Hello) -> Boolean = { k, h ->
+            (expected?.invoke(k) ?: true) && !(classic && knownPq(k)) &&
+                (!requireCert || checkCert(h, k).also { if (it.status != PeerCertStatus.VALID) certRefusal = it }.status == PeerCertStatus.VALID)
+        }
         val link = try {
-            PeerLink.establish(sock, local.identity, local.displayName, initiator, accept, classic)
+            PeerLink.establish(sock, local.identity, hello, initiator, accept, classic)
         } catch (e: RemoteRejectedException) {
             runCatching { sock.close() }
-            _events.value = if (expectNumber != null) {
+            _events.value = if (certRefusal != null) {
+                "Refused $seenAt: no valid certificate (${certRefusal!!.reason})"
+            } else if (expectNumber != null) {
                 "Number mismatch at $seenAt: the peer doesn't hold ${formatNumber(expectNumber)}"
             } else {
                 val pin = expectKey?.let { _contacts.value[convoKey(local.id, it)] }
@@ -288,6 +348,14 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             _events.value = "Refused a classical session at $seenAt: this contact speaks post-quantum"
             return Outcome.REFUSED
         }
+        val peerCert = checkCert(link.peerHello, link.remoteKey)
+        if (requireCert && peerCert.status != PeerCertStatus.VALID) {
+            // Responder side (the dialer side already hung up before message 3).
+            link.close()
+            _events.value = "Refused ${link.peerName} at $seenAt: no valid certificate (${peerCert.reason})"
+            return Outcome.REFUSED
+        }
+        _peerCerts.update { it + (convo to peerCert) }
         lastSeen[convo] = seenAt
         links.put(convo, Live(link, local))?.link?.close()
         val known = _contacts.value[convo]

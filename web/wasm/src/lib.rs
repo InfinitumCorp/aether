@@ -200,3 +200,79 @@ pub fn decode_key_drop(body: String) -> Result<Drop, JsError> {
 pub fn verify_device_certificate(certificate: Vec<u8>, ca_public_key: Vec<u8>, device_public_key: Vec<u8>, now_ms: f64) -> Result<String, JsError> {
     core::verify_device_certificate(certificate, ca_public_key, device_public_key, now_ms as u64).map(|c| c.label).map_err(err)
 }
+
+/// Encodes the handshake hello: display name plus this device's certificate (empty = none).
+#[wasm_bindgen(js_name = encodeHello)]
+pub fn encode_hello(name: String, certificate: Vec<u8>) -> Result<Vec<u8>, JsError> {
+    core::encode_hello(name, (!certificate.is_empty()).then_some(certificate)).map_err(err)
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct Hello {
+    pub name: String,
+    /// Empty when the peer sent no certificate.
+    pub certificate: Vec<u8>,
+}
+
+#[wasm_bindgen(js_name = decodeHello)]
+pub fn decode_hello(payload: Vec<u8>) -> Result<Hello, JsError> {
+    let h = core::decode_hello(payload).map_err(err)?;
+    Ok(Hello { name: h.name, certificate: h.certificate.unwrap_or_default() })
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct PeerCert {
+    /// "absent", "valid", "untrusted" or "invalid".
+    pub status: String,
+    pub label: String,
+    pub profile: String,
+    pub serial: String,
+    pub reason: String,
+}
+
+/// Checks a peer's certificate (empty = none) against trusted CA keys (concatenated 32-byte keys).
+#[wasm_bindgen(js_name = checkPeerCertificate)]
+pub fn check_peer_certificate(certificate: Vec<u8>, trusted_ca_keys: Vec<u8>, peer_public_key: Vec<u8>, now_ms: f64) -> PeerCert {
+    let cas = trusted_ca_keys.chunks_exact(32).map(<[u8]>::to_vec).collect();
+    let c = core::check_peer_certificate((!certificate.is_empty()).then_some(certificate), cas, peer_public_key, now_ms as u64);
+    let status = match c.status {
+        core::PeerCertStatus::Absent => "absent",
+        core::PeerCertStatus::Valid => "valid",
+        core::PeerCertStatus::Untrusted => "untrusted",
+        core::PeerCertStatus::Invalid => "invalid",
+    };
+    PeerCert {
+        status: status.into(),
+        label: c.label.unwrap_or_default(),
+        profile: c.profile.map(|p| p.name().to_owned()).unwrap_or_default(),
+        serial: c.serial.unwrap_or_default(),
+        reason: c.reason,
+    }
+}
+
+#[wasm_bindgen(getter_with_clone)]
+pub struct CertInfo {
+    pub label: String,
+    pub profile: String,
+    pub serial: String,
+    #[wasm_bindgen(js_name = devicePublicKey)]
+    pub device_public_key: Vec<u8>,
+    #[wasm_bindgen(js_name = notAfterMs)]
+    pub not_after_ms: f64,
+    #[wasm_bindgen(js_name = caKeyId)]
+    pub ca_key_id: String,
+}
+
+/// Decodes a certificate without verifying it (to show what was imported).
+#[wasm_bindgen(js_name = decodeDeviceCertificate)]
+pub fn decode_device_certificate(certificate: Vec<u8>) -> Result<CertInfo, JsError> {
+    let c = core::decode_device_certificate(certificate).map_err(err)?;
+    Ok(CertInfo {
+        label: c.label,
+        profile: c.profile.name().into(),
+        serial: c.serial,
+        device_public_key: c.device_public_key,
+        not_after_ms: c.not_after_ms as f64,
+        ca_key_id: c.ca_key_id,
+    })
+}

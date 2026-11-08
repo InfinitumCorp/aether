@@ -4,6 +4,8 @@ import uniffi.aether_core.ChatMessage
 import uniffi.aether_core.Handshake
 import uniffi.aether_core.Identity
 import uniffi.aether_core.Session
+import uniffi.aether_core.Hello
+import uniffi.aether_core.decodeHello
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
@@ -20,8 +22,11 @@ class PeerLink private constructor(
     private val input: DataInputStream,
     private val output: DataOutputStream,
     val session: Session,
-    val peerName: String,
+    /** What the peer sent in the handshake: display name and, optionally, its device certificate. */
+    val peerHello: Hello,
 ) : AutoCloseable {
+
+    val peerName: String = peerHello.name.take(64).ifBlank { "Unnamed peer" }
 
     val remoteKey: ByteArray = session.remotePublicKey()
 
@@ -50,46 +55,45 @@ class PeerLink private constructor(
          * Runs the handshake as initiator (we dialed) or responder (we accepted). A dialer uses the
          * hybrid post-quantum handshake (v2) unless [classic]; a responder answers either version.
          *
-         * [acceptRemote] (initiator only) is checked against the responder's authenticated key after
-         * message 2; if it refuses, the dialer hangs up before message 3, so a wrong peer never
-         * learns the dialer's identity key or name.
+         * [hello] is our encoded hello (core `encodeHello`). [acceptRemote] (initiator only) sees the
+         * responder's authenticated key and hello after message 2; if it refuses, the dialer hangs
+         * up before message 3, so a wrong peer never learns the dialer's identity, name or certificate.
          */
         fun establish(
             socket: Socket,
             identity: Identity,
-            displayName: String,
+            hello: ByteArray,
             initiator: Boolean,
-            acceptRemote: ((ByteArray) -> Boolean)? = null,
+            acceptRemote: ((ByteArray, Hello) -> Boolean)? = null,
             classic: Boolean = false,
         ): PeerLink {
             socket.tcpNoDelay = true
             socket.soTimeout = HANDSHAKE_TIMEOUT_MS
             val input = DataInputStream(socket.getInputStream().buffered())
             val output = DataOutputStream(socket.getOutputStream().buffered())
-            val name = displayName.toByteArray()
             val hs = when {
                 !initiator -> Handshake.responder(identity)
                 classic -> Handshake.initiatorClassic(identity)
                 else -> Handshake.initiator(identity)
             }
             try {
-                val peerName: String
+                val peerHello: Hello
                 if (initiator) {
                     writeFrame(output, hs.writeMessage(ByteArray(0)))     // -> e (+ ML-KEM key in v2)
-                    peerName = hs.readMessage(readFrame(input)).decodeToString() // <- e, ee, s, es (+name)
+                    peerHello = decodeHello(hs.readMessage(readFrame(input))) // <- e, ee, s, es (+hello)
                     if (acceptRemote != null) {
                         val rk = hs.remotePublicKey()
-                        if (rk == null || !acceptRemote(rk)) throw RemoteRejectedException()
+                        if (rk == null || !acceptRemote(rk, peerHello)) throw RemoteRejectedException()
                     }
-                    writeFrame(output, hs.writeMessage(name))             // -> s, se (+name)
+                    writeFrame(output, hs.writeMessage(hello))            // -> s, se (, psk) (+hello)
                 } else {
                     hs.readMessage(readFrame(input))                      // <- e
-                    writeFrame(output, hs.writeMessage(name))             // -> e, ee, s, es (+name)
-                    peerName = hs.readMessage(readFrame(input)).decodeToString() // <- s, se (+name)
+                    writeFrame(output, hs.writeMessage(hello))            // -> e, ee, s, es (+hello)
+                    peerHello = decodeHello(hs.readMessage(readFrame(input))) // <- s, se (, psk) (+hello)
                 }
                 val session = hs.finish()
                 socket.soTimeout = 0
-                return PeerLink(socket, input, output, session, peerName.take(64).ifBlank { "Unnamed peer" })
+                return PeerLink(socket, input, output, session, peerHello)
             } catch (e: Exception) {
                 runCatching { socket.close() }
                 throw e

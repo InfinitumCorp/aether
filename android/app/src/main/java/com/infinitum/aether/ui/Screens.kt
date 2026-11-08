@@ -34,6 +34,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import uniffi.aether_core.PeerCertStatus
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -294,7 +298,7 @@ private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File) 
                 )
                 is Screen.Chat -> Chat(node, s.convo, onBack = { screen = Screen.Home })
                 Screen.Numbers -> Numbers(node, onBack = { screen = Screen.Home })
-                Screen.Diagnostics -> Diagnostics(keyBacking(), scratchDir, onBack = { screen = Screen.Home })
+                Screen.Diagnostics -> Diagnostics(node, keyBacking(), scratchDir, onBack = { screen = Screen.Home })
             }
         }
     }
@@ -470,6 +474,7 @@ private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
     val viaBurner = contact?.via?.let { id -> burnerList.firstOrNull { it.id == id } }
     val msgs = remember(all, convo) { all.filter { it.convo == convo } }
     val online = states[convo] == LinkState.ONLINE
+    val peerCert = node.peerCerts.collectAsState().value[convo]
     var draft by rememberSaveable { mutableStateOf("") }
     var showSafety by remember { mutableStateOf(false) }
     var showDrop by remember { mutableStateOf(false) }
@@ -490,7 +495,13 @@ private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
                 StatusMark(online)
                 Spacer(Modifier.size(8.dp))
                 Kicker(
-                    if (online) "End-to-end encrypted · " + (if (contact?.pq == true) "post-quantum" else "classical") + " · online" else "Offline",
+                    if (online) "End-to-end encrypted · " + (if (contact?.pq == true) "post-quantum" else "classical") +
+                        when (peerCert?.status) {
+                            null -> ""
+                            PeerCertStatus.VALID -> " · certified ${peerCert.label}"
+                            PeerCertStatus.ABSENT -> " · uncertified"
+                            else -> " · certificate ${peerCert.status.name.lowercase()}"
+                        } + " · online" else "Offline",
                     color = if (online) Ink else Body,
                     modifier = Modifier.testTag("chat_status"),
                 )
@@ -1096,7 +1107,7 @@ private fun RemoteBurnDialog(node: AetherNode, onDismiss: () -> Unit) {
 // ---- Diagnostics -------------------------------------------------------------------------
 
 @Composable
-private fun Diagnostics(keyBacking: String, scratchDir: File, onBack: () -> Unit) {
+private fun Diagnostics(node: AetherNode, keyBacking: String, scratchDir: File, onBack: () -> Unit) {
     var results by remember { mutableStateOf<List<CheckResult>?>(null) }
     LaunchedEffect(Unit) { results = withContext(Dispatchers.Default) { SelfTest.run(scratchDir) } }
     Column(Modifier.fillMaxSize()) {
@@ -1139,8 +1150,52 @@ private fun Diagnostics(keyBacking: String, scratchDir: File, onBack: () -> Unit
                     modifier = Modifier.testTag("selftest_summary"),
                 )
             }
+            Section(3, "Device certificate")
+            DeviceCertificate(node)
             Spacer(Modifier.height(40.dp))
         }
+    }
+}
+
+@Composable
+private fun DeviceCertificate(node: AetherNode) {
+    val saved by node.certSettings.collectAsState()
+    var mine by remember(saved) { mutableStateOf(saved.mine) }
+    var cas by remember(saved) { mutableStateOf(saved.cas.joinToString(", ")) }
+    var require by remember(saved) { mutableStateOf(saved.require) }
+    var status by remember { mutableStateOf<Pair<String, Boolean>?>(null) }
+    val clipboard = LocalClipboardManager.current
+    Text(
+        "An ÆTHER CA (aether-ca) signs this device's identity key. Peers that trust the CA see it as certified. " +
+            "Burner numbers never send it.",
+        style = MaterialTheme.typography.bodySmall, color = Body, modifier = Modifier.padding(vertical = 12.dp),
+    )
+    SpecRow("Identity key", node.localKeyHex)
+    TextButton(onClick = { clipboard.setText(AnnotatedString(node.localKeyHex)) }, modifier = Modifier.testTag("cert_copy_key")) {
+        Text("Copy identity key", color = Ink)
+    }
+    OutlinedTextField(
+        value = mine, onValueChange = { mine = it.trim(); status = null },
+        label = { Text("Certificate (hex)") }, maxLines = 3,
+        shape = MaterialTheme.shapes.small, colors = fieldColors(),
+        modifier = Modifier.fillMaxWidth().testTag("cert_mine"),
+    )
+    Spacer(Modifier.height(10.dp))
+    OutlinedTextField(
+        value = cas, onValueChange = { cas = it; status = null },
+        label = { Text("Trusted CA keys (hex, comma separated)") }, maxLines = 3,
+        shape = MaterialTheme.shapes.small, colors = fieldColors(),
+        modifier = Modifier.fillMaxWidth().testTag("cert_cas"),
+    )
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+        Checkbox(checked = require, onCheckedChange = { require = it; status = null }, modifier = Modifier.testTag("cert_require"))
+        Text("Hang up on peers without a valid certificate", color = Ink, style = MaterialTheme.typography.bodyMedium)
+    }
+    status?.let { (text, ok) -> Text(text, color = if (ok) Ink else Alert, modifier = Modifier.padding(bottom = 8.dp)) }
+    PrimaryButton("Save", enabled = true, tag = "cert_save") {
+        node.saveCertSettings(mine, cas, require)
+            .onSuccess { status = it to true }
+            .onFailure { status = (it.message ?: "Could not save") to false }
     }
 }
 

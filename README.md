@@ -66,7 +66,10 @@ can dial nodes but can't accept inbound connections; it has no burner numbers of
   to classical v1 for older peers, never for a contact already seen with v2. The chat header
   shows "post-quantum" or "classical".
 - **Device certificates.** `aether-ca` (in `core/`) runs an organization CA: Ed25519-signed
-  certificates over device keys with cfssl-style profiles and serials. See
+  certificates over device keys with cfssl-style profiles and serials. Each side sends its
+  certificate in the encrypted handshake hello; the chat header shows "certified LABEL", and
+  with "require" on (Diagnostics on Android, About in the browser) uncertified peers are hung up
+  on before this identity is revealed. Burner numbers never send one. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#protocol-v2-hybrid-post-quantum-v1-fallback).
 - **Safety numbers** to detect a man in the middle, with a "verified" mark per contact.
 - **Key Drop.** In a conversation, drop your own or a teammate's identity key under a codename

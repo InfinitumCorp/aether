@@ -22,6 +22,7 @@ mod devicecert;
 mod envelope;
 mod error;
 mod fingerprint;
+mod hello;
 mod identity;
 mod keydrop;
 mod session;
@@ -38,12 +39,12 @@ pub use devicecert::{
 pub use envelope::{ChatMessage, MessageKind, MAX_BODY_BYTES};
 pub use error::AetherError;
 pub use fingerprint::{fingerprint, safety_number};
+pub use hello::{check_peer_certificate, decode_hello, encode_hello, Hello, PeerCertStatus, PeerCertificate};
 pub use identity::Identity;
 pub use keydrop::{decode_key_drop, encode_key_drop, suggest_codename, KeyDrop};
 pub use session::{Handshake, Session, LATEST_PROTOCOL, NOISE_PARAMS, NOISE_PARAMS_V2, PROLOGUE, PROLOGUE_V2};
 pub use vault::Vault;
 
-/// Version of the ÆTHER wire protocol implemented by this core.
 /// Version byte of the plaintext message envelope (independent of the handshake version).
 pub const PROTOCOL_VERSION: u8 = 1;
 

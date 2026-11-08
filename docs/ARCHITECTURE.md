@@ -79,7 +79,16 @@ Built with `--features registry`, `aether-ca` keeps that registry current: `init
 revoked serial. It calls service-role-only RPC functions in `public`
 (`supabase/migrations/20261108130000_aether_registry_functions.sql`, applied 2026-11-08; the `aether` schema itself is
 not exposed to the API) and reads the key from `AETHER_SUPABASE_SERVICE_KEY`.
-Exchanging and enforcing certificates during the handshake is the next step.
+
+**Certificates in the handshake.** The encrypted payloads of messages 2 and 3 carry a hello
+(`core/src/hello.rs`): `0x00 "AH1"` ‖ name_len u8 ‖ name ‖ cert_len u16 BE ‖ certificate. A
+payload without the magic is a bare name from an older client and decodes with no certificate.
+`check_peer_certificate` checks the certificate against the trusted CA keys and the key the
+handshake authenticated, so a certificate replayed by another device is `Invalid`; the result is
+`Absent`, `Valid`, `Untrusted` or `Invalid`. With "require" on, the dialer checks before sending
+message 3 (its identity is never revealed to a refused peer) and the responder drops the link
+after message 3. Burner sessions never send a certificate and aren't subject to "require".
+Revocation is checked by `aether-ca verify --online`, not yet by devices during the handshake.
 
 ## Storage (ÆTHER Vault™)
 
@@ -93,9 +102,9 @@ and stored in `noBackupFilesDir`. Two vaults exist: `identity.vault` and `messag
 ## Gaps against the product page (deliberate, for this first build)
 
 - **Organization-controlled identity.** Users create their own key today. The CA and device
-  certificates now exist (`aether-ca`), but devices don't yet present certificates in the
-  handshake or require them from peers; that, plus an enrollment flow tied to Cumulus://ID MIL™,
-  is next.
+  certificates now exist (`aether-ca`) and are exchanged and optionally required in the
+  handshake, but certificates are pasted in by hand and devices don't check revocation live; an
+  enrollment flow tied to Cumulus://ID MIL™ is next.
 - **Trust on first use.** A new peer is accepted and shown unverified until safety numbers are
   compared, or until its key is pinned from a Key Drop (a drop is as trustworthy as the teammate
   who sent it; dialing a pinned contact rejects any other key). With organization-signed keys this becomes automatic; key-change warnings come first.
