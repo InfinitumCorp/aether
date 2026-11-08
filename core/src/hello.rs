@@ -220,4 +220,48 @@ mod tests {
         assert_eq!(check_peer_certificate(Some(forged), trusted.clone(), dev.public_key(), NOW).status, PeerCertStatus::Invalid);
         assert_eq!(check_peer_certificate(Some(vec![9; 40]), trusted, dev.public_key(), NOW).status, PeerCertStatus::Invalid);
     }
+
+    /// Two certified devices dial each other the way the apps do: the responder's hello rides in
+    /// message 2, the dialer checks it before sending its own in message 3, and each side sees the
+    /// other as certified over a post-quantum session. An uncertified responder is caught before
+    /// the dialer's message 3 is written.
+    #[test]
+    fn certified_devices_handshake_and_see_each_other_as_certified() {
+        use crate::Handshake;
+        let ca = CertificateAuthority::generate();
+        let trusted = vec![ca.public_key()];
+        let (phone, desk) = (Identity::generate(), Identity::generate());
+        let now = 5_000;
+        let phone_cert = ca.issue(phone.public_key(), "FIELD-PHONE".into(), CertProfile::Node, 1_000, 1_000_000).unwrap();
+        let desk_cert = ca.issue(desk.public_key(), "WEB-DESK".into(), CertProfile::Operator, 1_000, 1_000_000).unwrap();
+
+        let dial = |responder_cert: Option<Vec<u8>>| {
+            let i = Handshake::initiator(desk.clone()).unwrap();
+            let r = Handshake::responder(phone.clone()).unwrap();
+            r.read_message(i.write_message(vec![]).unwrap()).unwrap();
+            let m2 = r.write_message(encode_hello("Field-Phone".into(), responder_cert).unwrap()).unwrap();
+            let hello = decode_hello(i.read_message(m2).unwrap()).unwrap();
+            let seen = check_peer_certificate(hello.certificate, trusted.clone(), i.remote_public_key().unwrap(), now);
+            (i, r, hello.name, seen)
+        };
+
+        let (i, r, name, seen_by_desk) = dial(Some(phone_cert));
+        assert_eq!(name, "Field-Phone");
+        assert_eq!(seen_by_desk.status, PeerCertStatus::Valid);
+        assert_eq!(seen_by_desk.label.as_deref(), Some("FIELD-PHONE"));
+        let m3 = i.write_message(encode_hello("Web-Desk".into(), Some(desk_cert)).unwrap()).unwrap();
+        let hello = decode_hello(r.read_message(m3).unwrap()).unwrap();
+        let seen_by_phone = check_peer_certificate(hello.certificate, trusted.clone(), r.remote_public_key().unwrap(), now);
+        assert_eq!(seen_by_phone.status, PeerCertStatus::Valid);
+        assert_eq!(seen_by_phone.label.as_deref(), Some("WEB-DESK"));
+        assert_eq!(seen_by_phone.profile, Some(CertProfile::Operator));
+        let (a, b) = (i.finish().unwrap(), r.finish().unwrap());
+        assert!(a.post_quantum() && b.post_quantum());
+        assert_eq!(a.handshake_hash(), b.handshake_hash());
+
+        // "Require" on the dialer: an uncertified phone is refused before message 3 exists.
+        let (i, _r, _, seen) = dial(None);
+        assert_eq!(seen.status, PeerCertStatus::Absent);
+        assert!(!i.is_finished());
+    }
 }
