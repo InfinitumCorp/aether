@@ -72,7 +72,7 @@ offline); `aether-ca sign --key ca.key --device <key hex> --label NAME [--profil
 [--expiry 8760h]` issues a certificate as JSON; `aether-ca verify` checks one. The core exports
 `verify_device_certificate` to Android and the browser. The registry of CAs and issued serials
 lives in `aether.certificate_authorities` / `aether.device_certificates`
-(`supabase/migrations/20261108120000_aether_device_certificates.sql`, not yet applied).
+(`supabase/migrations/20261108120000_aether_device_certificates.sql`, applied 2026-11-08 with the base `aether` schema).
 Exchanging and enforcing certificates during the handshake is the next step.
 
 ## Storage (ÆTHER Vault™)
