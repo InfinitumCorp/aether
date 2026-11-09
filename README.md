@@ -11,6 +11,7 @@ link, with ÆTHER Vault™ encrypted storage. See [docs/ARCHITECTURE.md](docs/AR
 for the design and the status of all ten systems.
 
 ```
+supabase/   Backend migrations (schema `aether` in the shared Infinitum Corp project; RLS on every table)
 core/       Rust security core (aether-core): identity, Noise sessions, envelopes, encrypted vault
 android/    ÆTHER Mobile MIL™ — Kotlin + Jetpack Compose; builds the core with cargo-ndk, binds it with UniFFI
 web/        ÆTHER MIL™ Web — the same core compiled to WebAssembly, a browser client and a local bridge
@@ -20,13 +21,20 @@ docs/       Architecture, protocol, threat model, system status
 ## ÆTHER MIL™ Web
 
 The browser client runs the same Rust core, compiled to WebAssembly (`web/wasm`, wasm-bindgen), so its
-Noise XX handshake, envelopes, Key Drop and burner-number checks are identical to the Android app's.
+post-quantum handshake (with v1 fallback), envelopes, Key Drop and burner-number checks are identical to the Android app's.
 Browsers can't open raw TCP connections, so the page reaches ÆTHER nodes through a local bridge
 (`web/bridge/bridge.mjs`, Node). The bridge listens on 127.0.0.1 only, accepts only allow-listed page
 origins, and dials only private-network or loopback addresses. It forwards encrypted frames and never
 sees plaintext.
 
-- Deployed (Cloudflare Pages, behind Cloudflare Access): https://aether-mil.pages.dev
+- Live at https://infinitumaether.app (Vercel project `aether-mil-web`; `www.` redirects to the apex,
+  and https://aether-mil-web.vercel.app still serves the same build). Config is `web/app/vercel.json`; deploy with
+  `cd web/app && vercel deploy --prod`. Vercel Authentication protects every deployment, production included
+  (`ssoProtection: all`): only members of the Vercel team can open it. Chrome asks once to allow local network access so the page can reach the
+  bridge on 127.0.0.1; allow it.
+- Also deployed on Cloudflare Workers (preview, behind Cloudflare Access): https://aether-mil-web.infinitumcorp.workers.dev
+  (`web/wrangler.jsonc`; deploy with `cd web && npx wrangler deploy`). The product domain is
+  on Vercel; the earlier Pages project https://aether-mil.pages.dev still serves the same build.
 - Run locally:
 
 ```bash
@@ -54,7 +62,16 @@ can dial nodes but can't accept inbound connections; it has no burner numbers of
 - **ÆTHER Mesh™ (single hop).** Peer discovery on the local network (mDNS / DNS-SD, `_aether._tcp`),
   or connect by `host:port`.
 - **ÆTHER Talk™ (text).** End-to-end encrypted 1:1 messaging over mutually authenticated,
-  forward-secret sessions: `Noise_XX_25519_ChaChaPoly_BLAKE2s`.
+  forward-secret, hybrid post-quantum sessions: Noise XX with X25519 plus an ML-KEM-768 secret
+  mixed into the key schedule (`Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s`, protocol v2). Falls back
+  to classical v1 for older peers, never for a contact already seen with v2. The chat header
+  shows "post-quantum" or "classical".
+- **Device certificates.** `aether-ca` (in `core/`) runs an organization CA: Ed25519-signed
+  certificates over device keys with cfssl-style profiles and serials. Each side sends its
+  certificate in the encrypted handshake hello; the chat header shows "certified LABEL", and
+  with "require" on (Diagnostics on Android, About in the browser) uncertified peers are hung up
+  on before this identity is revealed. Burner numbers never send one. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#protocol-v2-hybrid-post-quantum-v1-fallback).
 - **Safety numbers** to detect a man in the middle, with a "verified" mark per contact.
 - **Key Drop.** In a conversation, drop your own or a teammate's identity key under a codename
   (e.g. `NIGHTJAR-27`; a catchy one is suggested). It travels end-to-end encrypted; the recipient
@@ -91,6 +108,9 @@ returns 404 on the development network; see `android/settings.gradle.kts`.
 
 ```bash
 cd core && cargo test          # Rust unit tests (host)
+cd core && cargo run --bin aether-ca -- init --key ca.key   # organization CA (keep ca.key offline)
+# With the Supabase registry (AETHER_SUPABASE_SERVICE_KEY set in your shell, never committed):
+cd core && cargo run --features registry --bin aether-ca -- sign --key ca.key --device <key hex> --label NAME --register
 cd android && ./gradlew assembleDebug
 ```
 
@@ -116,3 +136,7 @@ adb -s emulator-5554 forward tcp:7337 tcp:7337
 ```
 
 From the emulator, the phone is reachable directly at its LAN address (shown under **Listening**).
+
+## Third-party software
+
+Open-source components and their licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

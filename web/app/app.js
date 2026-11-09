@@ -9,6 +9,7 @@ const dec = new TextDecoder();
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
 const unhex = (s) => Uint8Array.from(s.match(/../g) || [], (h) => parseInt(h, 16));
 const DEFAULT_BRIDGE = 'ws://127.0.0.1:7340';
+const isHex = (s, n) => typeof s === 'string' && s.length % 2 === 0 && /^[0-9a-f]*$/.test(s) && (n === undefined || s.length === n);
 
 // ---- storage (per-browser; see Diagnostics note) --------------------------------------------
 const store = {
@@ -31,7 +32,7 @@ const bridgeUrl = () => store.get('aether.bridge', DEFAULT_BRIDGE);
 function show(v) {
   document.querySelectorAll('.view').forEach((s) => { s.hidden = s.id !== 'v-' + v; });
   if (v === 'home') renderHome();
-  if (v === 'about') renderDiag();
+  if (v === 'about') { renderDiag(); renderCerts(); }
   if (v === 'connect') $('c-bridge').value = bridgeUrl();
   window.scrollTo(0, 0);
 }
@@ -103,25 +104,46 @@ class FrameSocket {
 }
 
 /** Dials addr through the bridge and runs the Noise XX handshake as initiator. */
-async function dial(addr, { expectKey = null, expectNumber = null } = {}) {
+class IdentityRefused extends Error {}
+
+// Dials with the hybrid post-quantum handshake (v2) and falls back to classical v1 only for a
+// peer that has never completed v2 with us, so an attacker can't strip ML-KEM from a known
+// post-quantum contact by breaking the first attempt.
+async function dial(addr, opts = {}) {
+  try {
+    return await dialOnce(addr, opts, false);
+  } catch (e) {
+    if (e instanceof IdentityRefused) throw e;
+    const known = opts.expectKey && contacts[opts.expectKey];
+    if (known?.pq) throw new Error('This contact speaks the post-quantum handshake and this attempt did not. Not falling back.');
+    return await dialOnce(addr, opts, true);
+  }
+}
+
+async function dialOnce(addr, { expectKey = null, expectNumber = null } = {}, classic) {
   const fs = new FrameSocket(`${bridgeUrl()}?to=${encodeURIComponent(addr)}`);
   await fs.opened;
-  const hs = core.Handshake.initiator(me.identity);
+  const hs = classic ? core.Handshake.initiatorClassic(me.identity) : core.Handshake.initiator(me.identity);
   try {
-    fs.send(hs.writeMessage(new Uint8Array()));                       // -> e
-    const peerName = dec.decode(hs.readMessage(await fs.next()));     // <- e, ee, s, es (+name)
+    fs.send(hs.writeMessage(new Uint8Array()));                       // -> e (+ ML-KEM key in v2)
+    const hello = core.decodeHello(hs.readMessage(await fs.next()));  // <- e, ee, s, es (+ ML-KEM ciphertext, hello)
+    const peerName = hello.name;
     const rk = hs.remotePublicKey();
     // Check the responder before revealing anything about ourselves (message 3 carries our key and name).
     if (!rk) throw new Error('No remote key');
-    if (expectKey && hex(rk) !== expectKey) throw new Error('That node is not the pinned key. Hung up before revealing this identity.');
-    if (expectNumber && core.burnerNumber(rk) !== expectNumber) throw new Error('That node does not hold this number. Hung up before revealing this identity.');
-    fs.send(hs.writeMessage(enc.encode(me.name)));                    // -> s, se (+name)
+    if (expectKey && hex(rk) !== expectKey) throw new IdentityRefused('That node is not the pinned key. Hung up before revealing this identity.');
+    if (expectNumber && core.burnerNumber(rk) !== expectNumber) throw new IdentityRefused('That node does not hold this number. Hung up before revealing this identity.');
+    if (classic && contacts[hex(rk)]?.pq) throw new IdentityRefused('This contact speaks the post-quantum handshake. Refusing a classical session.');
+    const cfg = certConfig();
+    const cert = core.checkPeerCertificate(hello.certificate, unhex(cfg.cas.join('')), rk, Date.now());
+    if (cfg.require && cert.status !== 'valid') throw new IdentityRefused(`That node has no valid certificate (${cert.reason}). Hung up before revealing this identity.`);
+    fs.send(hs.writeMessage(core.encodeHello(me.name, unhex(cfg.mine)))); // -> s, se (, psk) (+hello)
     const session = hs.finish();
     const k = hex(session.remotePublicKey());
     const prev = contacts[k] || {};
-    contacts[k] = { ...prev, name: (peerName || 'Unnamed peer').slice(0, 64), addr, number: expectNumber || prev.number || null, verified: !!prev.verified };
+    contacts[k] = { ...prev, name: (peerName || 'Unnamed peer').slice(0, 64), addr, number: expectNumber || prev.number || null, verified: !!prev.verified, pq: !!prev.pq || session.postQuantum() };
     saveContacts();
-    adopt(k, fs, session);
+    adopt(k, fs, session, { status: cert.status, label: cert.label, reason: cert.reason });
     return k;
   } catch (e) {
     fs.close();
@@ -131,9 +153,9 @@ async function dial(addr, { expectKey = null, expectNumber = null } = {}) {
   }
 }
 
-function adopt(k, fs, session) {
+function adopt(k, fs, session, cert) {
   links.get(k)?.fs.close();
-  const link = { fs, session, state: 'online' };
+  const link = { fs, session, state: 'online', cert };
   links.set(k, link);
   fs.onclose = () => { if (links.get(k) === link) { link.state = 'offline'; refresh(k); } };
   (async () => {
@@ -173,7 +195,11 @@ function renderChat() {
   const l = links.get(k);
   const online = l?.state === 'online';
   $('chat-name').textContent = c.codename ? `${c.name} · ${c.codename}` : c.name;
-  $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (c.verified ? ' · verified' : '');
+  const pq = online ? links.get(current).session.postQuantum() : !!c.pq;
+  const cert = online ? l.cert : null;
+  const certText = !cert ? '' : cert.status === 'valid' ? ` · certified ${cert.label}` : cert.status === 'absent' ? ' · uncertified' : ` · certificate ${cert.status}`;
+  $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (pq ? ' · post-quantum' : online ? ' · classical' : '') + certText + (c.verified ? ' · verified' : '');
+  $('chat-state').title = cert && cert.status !== 'valid' ? cert.reason : '';
   $('chat-sub').textContent = [c.number ? 'via ' + core.formatBurnerNumber(c.number) : null, c.pinned ? 'pinned key' : null, c.addr].filter(Boolean).join(' · ');
   $('chat-reconnect').hidden = online;
   $('chat-drop').disabled = !online;
@@ -273,6 +299,50 @@ $('f-connect').addEventListener('submit', async (e) => {
 });
 
 // ---- diagnostics ----------------------------------------------------------------------------
+function certConfig() {
+  const c = store.get('aether.cert', {});
+  return { mine: isHex(c.mine) ? c.mine : '', cas: Array.isArray(c.cas) ? c.cas.filter((k) => isHex(k, 64)) : [], require: !!c.require };
+}
+
+function renderCerts(msg) {
+  const cfg = certConfig();
+  $('cert-mykey').value = hex(me.identity.publicKey());
+  $('cert-mine').value = cfg.mine;
+  $('cert-cas').value = cfg.cas.join(', ');
+  $('cert-require').checked = cfg.require;
+  const st = $('cert-status');
+  st.className = 'status';
+  if (msg) { st.textContent = msg; return; }
+  if (!cfg.mine) { st.textContent = 'No certificate: peers see this browser as uncertified.'; return; }
+  const own = core.checkPeerCertificate(unhex(cfg.mine), unhex(cfg.cas.join('')), me.identity.publicKey(), Date.now());
+  const info = core.decodeDeviceCertificate(unhex(cfg.mine));
+  const until = new Date(info.notAfterMs).toISOString().slice(0, 10);
+  st.textContent = own.status === 'valid'
+    ? `Certified as ${info.label} (${info.profile}) until ${until}.`
+    : own.status === 'untrusted'
+      ? `Certificate for ${info.label} until ${until}; add its CA key above to check it here.`
+      : `This certificate is not usable here: ${own.reason}.`;
+  if (own.status === 'invalid') st.className = 'status err';
+}
+
+$('cert-save').addEventListener('click', () => {
+  const mine = $('cert-mine').value.trim().toLowerCase();
+  const cas = $('cert-cas').value.split(/[\s,]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const st = $('cert-status');
+  st.className = 'status err';
+  if (mine && !isHex(mine)) { st.textContent = 'The certificate must be hex.'; return; }
+  if (mine) {
+    try {
+      const info = core.decodeDeviceCertificate(unhex(mine));
+      if (hex(info.devicePublicKey) !== hex(me.identity.publicKey())) { st.textContent = "That certificate is for a different key, not this browser's."; return; }
+    } catch { st.textContent = 'That is not an ÆTHER device certificate.'; return; }
+  }
+  const bad = cas.find((k) => !isHex(k, 64));
+  if (bad) { st.textContent = 'Each CA key is 64 hex characters.'; return; }
+  store.set('aether.cert', { mine, cas, require: $('cert-require').checked });
+  renderCerts();
+});
+
 function renderDiag() {
   const out = [];
   const check = (name, fn) => { try { out.push([name, fn() ? 'Pass' : 'Fail']); } catch (e) { out.push([name, 'Fail: ' + e.message]); } };
@@ -287,6 +357,26 @@ function renderDiag() {
     const si = i.finish(), sr = r.finish();
     const m = sr.decrypt(si.encrypt(KIND.TEXT, Date.now(), 'ping'));
     return m.body === 'ping' && si.safetyNumber(a) === sr.safetyNumber(b);
+  });
+  check('Post-quantum handshake (X25519 + ML-KEM-768)', () => {
+    const a = core.Identity.generate(), b = core.Identity.generate();
+    const i = core.Handshake.initiator(a), r = core.Handshake.responder(b);
+    r.readMessage(i.writeMessage(new Uint8Array()));
+    i.readMessage(r.writeMessage(new Uint8Array()));
+    r.readMessage(i.writeMessage(new Uint8Array()));
+    const si = i.finish(), sr = r.finish();
+    const c = core.Handshake.initiatorClassic(a), rc = core.Handshake.responder(b);
+    rc.readMessage(c.writeMessage(new Uint8Array()));
+    c.readMessage(rc.writeMessage(new Uint8Array()));
+    rc.readMessage(c.writeMessage(new Uint8Array()));
+    const sc = c.finish();
+    return si.postQuantum() && sr.postQuantum() && !sc.postQuantum() && sr.decrypt(si.encrypt(KIND.TEXT, 0, 'pq')).body === 'pq';
+  });
+  check('Device certificate in the handshake hello', () => {
+    const peer = core.Identity.generate();
+    const h = core.decodeHello(core.encodeHello('Peer', new Uint8Array()));
+    const none = core.checkPeerCertificate(h.certificate, new Uint8Array(), peer.publicKey(), Date.now());
+    return h.name === 'Peer' && none.status === 'absent' && core.decodeHello(enc.encode('Legacy')).name === 'Legacy';
   });
   check('Tampered frame rejected', () => {
     const a = core.Identity.generate(), b = core.Identity.generate();

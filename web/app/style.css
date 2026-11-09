@@ -22,6 +22,8 @@ main { flex: 1; }
 
 .stack { display: grid; gap: 18px; max-width: 560px; margin-top: 28px; }
 label { display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
+label.check { display: flex; gap: 10px; align-items: center; color: var(--ink); }
+label.check input { width: auto; }
 input { border: 1px solid var(--ink); padding: 14px; color: var(--ink); background: var(--paper); border-radius: 0; width: 100%; }
 .btn-primary:disabled { background: var(--line); border-color: var(--line); cursor: default; }
 .status { min-height: 1.5em; margin: 0; }
@@ -36,6 +38,7 @@ input { border: 1px solid var(--ink); padding: 14px; color: var(--ink); backgrou
 #diag li { padding: 12px 0; display: flex; justify-content: space-between; gap: 12px; }
 
 .chat { display: flex; flex-direction: column; min-height: 70vh; }
+.chat[hidden] { display: none; }
 .chat-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 1px solid var(--line); padding-bottom: 14px; flex-wrap: wrap; }
 .chat-actions { display: flex; gap: 18px; }
 .msgs { list-style: none; padding: 20px 0; margin: 0; flex: 1; display: flex; flex-direction: column; gap: 12px; }
