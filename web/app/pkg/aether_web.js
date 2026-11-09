@@ -117,11 +117,6 @@ export function coreVersion() {
     }
 }
 
-function getArrayU8FromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
-}
-
 function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
@@ -134,88 +129,6 @@ function takeFromExternrefTable0(idx) {
     wasm.__externref_table_dealloc(idx);
     return value;
 }
-/**
- * @param {Uint8Array} payload
- * @returns {Hello}
- */
-export function decodeHello(payload) {
-    const ptr0 = passArray8ToWasm0(payload, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decodeHello(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return Hello.__wrap(ret[0]);
-}
-
-/**
- * Decodes a certificate without verifying it (to show what was imported).
- * @param {Uint8Array} certificate
- * @returns {CertInfo}
- */
-export function decodeDeviceCertificate(certificate) {
-    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decodeDeviceCertificate(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return CertInfo.__wrap(ret[0]);
-}
-
-/**
- * Checks a peer's certificate (empty = none) against trusted CA keys (concatenated 32-byte keys).
- * @param {Uint8Array} certificate
- * @param {Uint8Array} trusted_ca_keys
- * @param {Uint8Array} peer_public_key
- * @param {number} now_ms
- * @returns {PeerCert}
- */
-export function checkPeerCertificate(certificate, trusted_ca_keys, peer_public_key, now_ms) {
-    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passArray8ToWasm0(trusted_ca_keys, wasm.__wbindgen_malloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArray8ToWasm0(peer_public_key, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ret = wasm.checkPeerCertificate(ptr0, len0, ptr1, len1, ptr2, len2, now_ms);
-    return PeerCert.__wrap(ret);
-}
-
-function getArrayJsValueFromWasm0(ptr, len) {
-    ptr = ptr >>> 0;
-    const mem = getDataViewMemory0();
-    const result = [];
-    for (let i = ptr; i < ptr + 4 * len; i += 4) {
-        result.push(wasm.__wbindgen_export_2.get(mem.getUint32(i, true)));
-    }
-    wasm.__externref_drop_slice(ptr, len);
-    return result;
-}
-
-function passArrayJsValueToWasm0(array, malloc) {
-    const ptr = malloc(array.length * 4, 4) >>> 0;
-    for (let i = 0; i < array.length; i++) {
-        const add = addToExternrefTable0(array[i]);
-        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
-    }
-    WASM_VECTOR_LEN = array.length;
-    return ptr;
-}
-/**
- * @param {string} body
- * @returns {Drop}
- */
-export function decodeKeyDrop(body) {
-    const ptr0 = passStringToWasm0(body, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.decodeKeyDrop(ptr0, len0);
-    if (ret[2]) {
-        throw takeFromExternrefTable0(ret[1]);
-    }
-    return Drop.__wrap(ret[0]);
-}
-
 /**
  * Verifies an ÆTHER device certificate; returns its label, or throws.
  * @param {Uint8Array} certificate
@@ -249,6 +162,10 @@ export function verifyDeviceCertificate(certificate, ca_public_key, device_publi
     }
 }
 
+function getArrayU8FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint8ArrayMemory0().subarray(ptr / 1, ptr / 1 + len);
+}
 /**
  * Encodes the handshake hello: display name plus this device's certificate (empty = none).
  * @param {string} name
@@ -270,41 +187,81 @@ export function encodeHello(name, certificate) {
 }
 
 /**
- * @param {Uint8Array} public_key
- * @returns {string}
+ * Checks a peer's certificate (empty = none) against trusted CA keys (concatenated 32-byte keys).
+ * @param {Uint8Array} certificate
+ * @param {Uint8Array} trusted_ca_keys
+ * @param {Uint8Array} peer_public_key
+ * @param {number} now_ms
+ * @returns {PeerCert}
  */
-export function burnerNumber(public_key) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passArray8ToWasm0(public_key, wasm.__wbindgen_malloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.burnerNumber(ptr0, len0);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
-    }
+export function checkPeerCertificate(certificate, trusted_ca_keys, peer_public_key, now_ms) {
+    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(trusted_ca_keys, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(peer_public_key, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.checkPeerCertificate(ptr0, len0, ptr1, len1, ptr2, len2, now_ms);
+    return PeerCert.__wrap(ret);
 }
 
 /**
- * @param {string} number
+ * Decodes a certificate without verifying it (to show what was imported).
+ * @param {Uint8Array} certificate
+ * @returns {CertInfo}
+ */
+export function decodeDeviceCertificate(certificate) {
+    const ptr0 = passArray8ToWasm0(certificate, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeDeviceCertificate(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return CertInfo.__wrap(ret[0]);
+}
+
+/**
+ * @param {Uint8Array} payload
+ * @returns {Hello}
+ */
+export function decodeHello(payload) {
+    const ptr0 = passArray8ToWasm0(payload, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeHello(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Hello.__wrap(ret[0]);
+}
+
+/**
+ * Settings toggle. Off (the default) leaves peer labels unchanged.
+ * @param {boolean} enabled
+ */
+export function setGeoRouting(enabled) {
+    wasm.setGeoRouting(enabled);
+}
+
+/**
+ * @returns {boolean}
+ */
+export function geoRoutingEnabled() {
+    const ret = wasm.geoRoutingEnabled();
+    return ret !== 0;
+}
+
+/**
+ * Peer label. Returns `endpoint` unchanged while geo routing is off.
+ * @param {string} endpoint
  * @returns {string}
  */
-export function formatBurnerNumber(number) {
+export function describeEndpoint(endpoint) {
     let deferred2_0;
     let deferred2_1;
     try {
-        const ptr0 = passStringToWasm0(number, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.formatBurnerNumber(ptr0, len0);
+        const ret = wasm.describeEndpoint(ptr0, len0);
         deferred2_0 = ret[0];
         deferred2_1 = ret[1];
         return getStringFromWasm0(ret[0], ret[1]);
@@ -377,6 +334,84 @@ export function encodeKeyDrop(codename, name, public_key, addresses) {
         return getStringFromWasm0(ptr5, len5);
     } finally {
         wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
+}
+
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_export_2.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
+    return ptr;
+}
+/**
+ * @param {string} body
+ * @returns {Drop}
+ */
+export function decodeKeyDrop(body) {
+    const ptr0 = passStringToWasm0(body, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeKeyDrop(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Drop.__wrap(ret[0]);
+}
+
+/**
+ * @param {Uint8Array} public_key
+ * @returns {string}
+ */
+export function burnerNumber(public_key) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passArray8ToWasm0(public_key, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.burnerNumber(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * @param {string} number
+ * @returns {string}
+ */
+export function formatBurnerNumber(number) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(number, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.formatBurnerNumber(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

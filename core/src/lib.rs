@@ -14,6 +14,8 @@
 //! * [`KeyDrop`]: an identity key card shared under a codename inside a session.
 //! * Burner numbers: disposable mesh numbers bound to their own keys, plus remote-burn codes.
 //! * [`Vault`]: an append-only, XChaCha20-Poly1305 encrypted record store.
+//! * Geo routing is off unless `INFINITUM_GEO_ENABLED` or the settings toggle turns it on.
+//!   While off, peer labels stay exactly as they were.
 
 uniffi::setup_scaffolding!();
 
@@ -22,6 +24,7 @@ mod devicecert;
 mod envelope;
 mod error;
 mod fingerprint;
+pub mod geo;
 mod hello;
 mod identity;
 mod keydrop;
@@ -39,6 +42,7 @@ pub use devicecert::{
 pub use envelope::{ChatMessage, MessageKind, MAX_BODY_BYTES};
 pub use error::AetherError;
 pub use fingerprint::{fingerprint, safety_number};
+pub use geo::{describe_endpoint, geo_routing_enabled, set_geo_routing};
 pub use hello::{check_peer_certificate, decode_hello, encode_hello, Hello, PeerCertStatus, PeerCertificate};
 pub use identity::Identity;
 pub use keydrop::{decode_key_drop, encode_key_drop, suggest_codename, KeyDrop};

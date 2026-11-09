@@ -81,6 +81,7 @@ import com.infinitum.aether.data.toHex
 import uniffi.aether_core.KeyDrop
 import uniffi.aether_core.coreVersion
 import uniffi.aether_core.decodeKeyDrop
+import uniffi.aether_core.describeEndpoint
 import uniffi.aether_core.fingerprint
 import uniffi.aether_core.parseBurnerNumber
 import uniffi.aether_core.suggestCodename
@@ -308,6 +309,7 @@ private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File) 
 private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: () -> Unit, onNumbers: () -> Unit) {
     val contacts by node.contacts.collectAsState()
     val nearby by node.nearby.collectAsState()
+    val geoOn by node.geoRouting.collectAsState()
     val states by node.linkStates.collectAsState()
     val messages by node.messages.collectAsState()
     var showConnect by remember { mutableStateOf(false) }
@@ -343,7 +345,7 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
                     online = false,
                     title = p.serviceName,
                     titleMono = true,
-                    subtitle = "${p.host}:${p.port}",
+                    subtitle = if (geoOn) describeEndpoint("${p.host}:${p.port}") else "${p.host}:${p.port}",
                     trailing = "Connect ↗",
                 ) { node.connect(p.host, p.port) }
             }
@@ -626,6 +628,7 @@ private fun DropCard(node: AetherNode, m: StoredMessage, fmt: SimpleDateFormat) 
     val keyHex = remember(drop) { drop.publicKey.toHex() }
     val fp = remember(drop) { runCatching { fingerprint(drop.publicKey) }.getOrDefault("") }
     val contacts by node.contacts.collectAsState()
+    val geoOn by node.geoRouting.collectAsState()
     val pinConvo = convoKey(m.via, keyHex)
     val pinned = contacts[pinConvo]?.let { it.pinned && it.codename == drop.codename } == true
     val fg = if (m.outgoing) Paper else Ink
@@ -655,7 +658,11 @@ private fun DropCard(node: AetherNode, m: StoredMessage, fmt: SimpleDateFormat) 
                 Spacer(Modifier.height(10.dp))
                 Kicker("Last seen", color = sub)
                 Spacer(Modifier.height(4.dp))
-                Text(drop.addresses.joinToString("\n"), style = MaterialTheme.typography.bodySmall.copy(fontFamily = Mono), color = fg)
+                Text(
+                    if (geoOn) drop.addresses.joinToString("\n") { describeEndpoint(it) } else drop.addresses.joinToString("\n"),
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = Mono),
+                    color = fg,
+                )
             }
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1152,6 +1159,8 @@ private fun Diagnostics(node: AetherNode, keyBacking: String, scratchDir: File, 
             }
             Section(3, "Device certificate")
             DeviceCertificate(node)
+            Section(4, "Geo routing")
+            GeoRouting(node)
             Spacer(Modifier.height(40.dp))
         }
     }
@@ -1196,6 +1205,23 @@ private fun DeviceCertificate(node: AetherNode) {
         node.saveCertSettings(mine, cas, require)
             .onSuccess { status = it to true }
             .onFailure { status = (it.message ?: "Could not save") to false }
+    }
+}
+
+@Composable
+private fun GeoRouting(node: AetherNode) {
+    val on by node.geoRouting.collectAsState()
+    Text(
+        "Annotate peer addresses with country and site category for cyber routing. Off leaves every connection unchanged.",
+        style = MaterialTheme.typography.bodySmall, color = Body, modifier = Modifier.padding(vertical = 12.dp),
+    )
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 8.dp)) {
+        Checkbox(
+            checked = on,
+            onCheckedChange = { node.setGeoRoutingEnabled(it) },
+            modifier = Modifier.testTag("geo_routing"),
+        )
+        Text("Geo routing", color = Ink, style = MaterialTheme.typography.bodyMedium)
     }
 }
 

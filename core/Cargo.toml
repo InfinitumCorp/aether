@@ -18,6 +18,10 @@ path = "src/bin/uniffi-bindgen.rs"
 name = "aether-ca"
 path = "src/bin/aether-ca.rs"
 
+[[bin]]
+name = "fetch-geo"
+path = "src/bin/fetch-geo.rs"
+
 [dependencies]
 uniffi = { version = "0.28.3", features = ["cli"] }
 thiserror = "1.0.69"
