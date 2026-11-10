@@ -36,5 +36,9 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Peer-to-peer encrypted messaging node: keeps the device reachable by teammates on the local mesh." />
         </service>
+
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-7308175971826620~3670922661" />
     </application>
 </manifest>

@@ -1,6 +1,14 @@
 package com.infinitum.aether
 
 import android.os.Bundle
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import android.widget.FrameLayout
+import android.view.View
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -11,6 +19,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.infinitum.aether.ads.Ads
 import com.infinitum.aether.net.AetherNode
 import com.infinitum.aether.ui.AetherRoot
 import com.infinitum.aether.ui.AetherTheme
@@ -38,25 +47,39 @@ class MainActivity : ComponentActivity() {
         }
         val app = application as AetherApp
         setContent {
-            AetherTheme {
-                var loading by remember { mutableStateOf(true) }
-                var node by remember { mutableStateOf<AetherNode?>(null) }
-                var error by remember { mutableStateOf<String?>(null) }
-                LaunchedEffect(Unit) {
-                    try {
-                        node = withContext(Dispatchers.IO) { app.ensureNode() }
-                    } catch (e: Exception) {
-                        error = e.message ?: e.toString()
+            Column(Modifier.fillMaxSize()) {
+                Box(Modifier.weight(1f)) {
+                    AetherTheme {
+                        var loading by remember { mutableStateOf(true) }
+                        var node by remember { mutableStateOf<AetherNode?>(null) }
+                        var error by remember { mutableStateOf<String?>(null) }
+                        LaunchedEffect(Unit) {
+                            try {
+                                node = withContext(Dispatchers.IO) { app.ensureNode() }
+                            } catch (e: Exception) {
+                                error = e.message ?: e.toString()
+                            }
+                            loading = false
+                        }
+                        AetherRoot(
+                            loading = loading,
+                            node = node,
+                            fatalError = error,
+                            keyBacking = { app.store.keyBacking },
+                            onCreateProfile = { name -> withContext(Dispatchers.IO) { app.createProfile(name) }.also { node = it } },
+                            scratchDir = cacheDir,
+                        )
                     }
-                    loading = false
                 }
-                AetherRoot(
-                    loading = loading,
-                    node = node,
-                    fatalError = error,
-                    keyBacking = { app.store.keyBacking },
-                    onCreateProfile = { name -> withContext(Dispatchers.IO) { app.createProfile(name) }.also { node = it } },
-                    scratchDir = cacheDir,
+                // Collapses to zero height when ads are off or a banner does not load.
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth(),
+                    factory = { ctx ->
+                        FrameLayout(ctx).apply {
+                            visibility = View.GONE
+                            Ads.attach(this@MainActivity, this)
+                        }
+                    },
                 )
             }
         }
