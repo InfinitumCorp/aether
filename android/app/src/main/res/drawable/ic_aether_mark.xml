@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- ÆTHER launcher mark: a geometric "Æ" ligature. Black on transparent; it sits inside the 66dp safe zone. -->
+<!-- Infinitum icon: Arial Regular glyph, ink #111820 on white (icongen/rollout.mjs). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:strokeColor="#FF000000" android:strokeWidth="3.4" android:strokeLineJoin="miter"
-        android:strokeLineCap="butt" android:fillColor="#00000000"
-        android:pathData="M34,72L50,36 M50,36L50,72 M41,58L50,58 M50,36L74,36 M50,54L70,54 M50,72L74,72" />
+    <path android:fillColor="#111820" android:pathData="M32.18 68.59L28.00 68.59L42.03 39.41L65.97 39.41L65.97 42.86L51.30 42.86L51.30 51.83L64.93 51.83L64.93 55.25L51.30 55.25L51.30 65.14L66.50 65.14L66.50 68.59L47.42 68.59L47.42 60.17L36.16 60.17L32.18 68.59ZM44.54 42.86L37.79 56.75L47.42 56.75L47.42 42.86L44.54 42.86ZM71.70 45.25L70.73 45.25L70.73 40.28L68.84 40.28L68.84 39.41L73.61 39.41L73.61 40.28L71.70 40.28L71.70 45.25ZM75.16 45.25L74.26 45.25L74.26 39.41L75.69 39.41L77.17 44.08L78.60 39.41L80 39.41L80 45.25L79.11 45.25L79.11 40.35L77.61 45.25L76.73 45.25L75.16 40.28L75.16 45.25Z" />
 </vector>
