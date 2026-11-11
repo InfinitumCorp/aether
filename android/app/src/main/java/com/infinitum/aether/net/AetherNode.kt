@@ -42,8 +42,11 @@ import uniffi.aether_core.encodeHello
 import uniffi.aether_core.burnerNumber
 import uniffi.aether_core.burnerNumberMatches
 import uniffi.aether_core.decodeKeyDrop
+import uniffi.aether_core.describeEndpoint
 import uniffi.aether_core.encodeKeyDrop
 import uniffi.aether_core.generateBurnCode
+import uniffi.aether_core.geoRoutingEnabled
+import uniffi.aether_core.setGeoRouting
 import uniffi.aether_core.suggestCodename
 import uniffi.aether_core.verifyBurnCode
 import java.net.Inet4Address
@@ -117,6 +120,31 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         ),
     )
     val certSettings: StateFlow<CertSettings> = _certSettings.asStateFlow()
+    private val geoPrefs = context.getSharedPreferences("aether.geo", Context.MODE_PRIVATE)
+    private val _geoRouting = MutableStateFlow(initialGeo())
+    /** Persisted geo-routing switch. Off unless the operator saved it on, or the env flag is on. */
+    val geoRouting: StateFlow<Boolean> = _geoRouting.asStateFlow()
+
+    init {
+        if (geoPrefs.contains("enabled")) setGeoRouting(_geoRouting.value)
+    }
+
+    private fun initialGeo(): Boolean =
+        if (geoPrefs.contains("enabled")) geoPrefs.getBoolean("enabled", false)
+        else runCatching { geoRoutingEnabled() }.getOrDefault(false)
+
+    /** Saves the settings toggle and arms the core switch. `false` keeps existing behavior. */
+    fun setGeoRoutingEnabled(on: Boolean) {
+        geoPrefs.edit().putBoolean("enabled", on).apply()
+        runCatching { setGeoRouting(on) }
+        _geoRouting.value = on
+    }
+
+    /** Peer label for logs. While geo routing is off this is `endpoint` with no core call. */
+    private fun shown(endpoint: String): String {
+        if (!_geoRouting.value) return endpoint
+        return runCatching { describeEndpoint(endpoint) }.getOrDefault(endpoint)
+    }
     /** The certificate each live conversation's peer presented, as checked when it connected. */
     private val _peerCerts = MutableStateFlow<Map<String, PeerCertificate>>(emptyMap())
     val peerCerts: StateFlow<Map<String, PeerCertificate>> = _peerCerts.asStateFlow()
@@ -234,10 +262,10 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         val first = dialOnce(local, host, port, expectKey, expectNumber, classic = false)
         if (first != Outcome.HANDSHAKE_FAILED) return first == Outcome.DONE
         if (expectKey != null && _contacts.value[convoKey(local.id, expectKey)]?.pq == true) {
-            _events.value = "Post-quantum handshake failed at $host:$port; classical fallback refused for this contact"
+            _events.value = "Post-quantum handshake failed at ${shown("$host:$port")}; classical fallback refused for this contact"
             return false
         }
-        Log.i(TAG, "post-quantum handshake failed at $host:$port; retrying classical")
+        Log.i(TAG, "post-quantum handshake failed at ${shown("$host:$port")}; retrying classical")
         return dialOnce(local, host, port, expectKey, expectNumber, classic = true) == Outcome.DONE
     }
 
@@ -246,9 +274,9 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         try {
             sock.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
         } catch (e: Exception) {
-            Log.w(TAG, "connect $host:$port failed", e)
+            Log.w(TAG, "connect ${shown("$host:$port")} failed", e)
             runCatching { sock.close() }
-            _events.value = "Could not reach $host:$port"
+            _events.value = "Could not reach ${shown("$host:$port")}"
             return Outcome.UNREACHABLE
         }
         return adopt(sock, initiator = true, local = local, seenAt = "$host:$port", expectKey = expectKey, expectNumber = expectNumber, classic = classic)
@@ -316,12 +344,12 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         } catch (e: RemoteRejectedException) {
             runCatching { sock.close() }
             _events.value = if (certRefusal != null) {
-                "Refused $seenAt: no valid certificate (${certRefusal!!.reason})"
+                "Refused ${shown(seenAt)}: no valid certificate (${certRefusal!!.reason})"
             } else if (expectNumber != null) {
-                "Number mismatch at $seenAt: the peer doesn't hold ${formatNumber(expectNumber)}"
+                "Number mismatch at ${shown(seenAt)}: the peer doesn't hold ${formatNumber(expectNumber)}"
             } else {
                 val pin = expectKey?.let { _contacts.value[convoKey(local.id, it)] }
-                "Key mismatch at $seenAt: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
+                "Key mismatch at ${shown(seenAt)}: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
             }
             return Outcome.REFUSED
         } catch (e: Exception) {
@@ -335,24 +363,24 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         if (expectKey != null && key != expectKey) {
             link.close()
             val pin = _contacts.value[convoKey(local.id, expectKey)]
-            _events.value = "Key mismatch at $seenAt: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
+            _events.value = "Key mismatch at ${shown(seenAt)}: not ${pin?.codename ?: pin?.name ?: "the pinned operator"}"
             return Outcome.REFUSED
         }
         if (expectNumber != null && !burnerNumberMatches(expectNumber, link.remoteKey)) {
             link.close()
-            _events.value = "Number mismatch at $seenAt: the peer doesn't hold ${formatNumber(expectNumber)}"
+            _events.value = "Number mismatch at ${shown(seenAt)}: the peer doesn't hold ${formatNumber(expectNumber)}"
             return Outcome.REFUSED
         }
         if (!link.postQuantum && knownPq(link.remoteKey)) {
             link.close()
-            _events.value = "Refused a classical session at $seenAt: this contact speaks post-quantum"
+            _events.value = "Refused a classical session at ${shown(seenAt)}: this contact speaks post-quantum"
             return Outcome.REFUSED
         }
         val peerCert = checkCert(link.peerHello, link.remoteKey)
         if (requireCert && peerCert.status != PeerCertStatus.VALID) {
             // Responder side (the dialer side already hung up before message 3).
             link.close()
-            _events.value = "Refused ${link.peerName} at $seenAt: no valid certificate (${peerCert.reason})"
+            _events.value = "Refused ${link.peerName} at ${shown(seenAt)}: no valid certificate (${peerCert.reason})"
             return Outcome.REFUSED
         }
         _peerCerts.update { it + (convo to peerCert) }

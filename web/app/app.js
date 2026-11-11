@@ -28,11 +28,40 @@ function addMsg(k, m) { const l = msgsOf(k); l.push(m); store.set('aether.msgs.'
 function saveContacts() { store.set('aether.contacts', contacts); }
 const bridgeUrl = () => store.get('aether.bridge', DEFAULT_BRIDGE);
 
+/** Saved geo-routing switch. `null` means the operator has never set it (stays off). */
+function geoStored() {
+  try {
+    const raw = localStorage.getItem('aether.geo');
+    if (raw === null) return null;
+    return JSON.parse(raw) === true;
+  } catch { return null; }
+}
+function applyGeoRouting(on) {
+  if (typeof core.setGeoRouting === 'function') core.setGeoRouting(!!on);
+}
+function renderGeo() {
+  const box = $('geo-routing');
+  if (!box) return;
+  const stored = geoStored();
+  const on = stored === null
+    ? (typeof core.geoRoutingEnabled === 'function' ? core.geoRoutingEnabled() : false)
+    : stored;
+  box.checked = !!on;
+  if (stored !== null) applyGeoRouting(on);
+}
+/** Address text for the page. While geo routing is off this is `addr` itself. */
+function showAddr(addr) {
+  if (!addr) return '';
+  if (typeof core.geoRoutingEnabled !== 'function' || !core.geoRoutingEnabled()) return addr;
+  if (typeof core.describeEndpoint !== 'function') return addr;
+  try { return core.describeEndpoint(addr); } catch { return addr; }
+}
+
 // ---- views ----------------------------------------------------------------------------------
 function show(v) {
   document.querySelectorAll('.view').forEach((s) => { s.hidden = s.id !== 'v-' + v; });
   if (v === 'home') renderHome();
-  if (v === 'about') { renderDiag(); renderCerts(); }
+  if (v === 'about') { renderDiag(); renderCerts(); renderGeo(); }
   if (v === 'connect') $('c-bridge').value = bridgeUrl();
   window.scrollTo(0, 0);
 }
@@ -59,7 +88,7 @@ function renderHome() {
     const b = document.createElement('button');
     b.innerHTML = '<span><span class="name"></span><br><span class="meta"></span></span><span class="meta state"></span>';
     b.querySelector('.name').textContent = c.codename ? `${c.name} · ${c.codename}` : c.name;
-    b.querySelector('.meta').textContent = last ? (last.drop ? 'Key Drop' : last.body).slice(0, 80) : (c.number ? core.formatBurnerNumber(c.number) : c.addr || '');
+    b.querySelector('.meta').textContent = last ? (last.drop ? 'Key Drop' : last.body).slice(0, 80) : (c.number ? core.formatBurnerNumber(c.number) : showAddr(c.addr));
     b.querySelector('.state').textContent = (c.verified ? 'Verified · ' : '') + state;
     b.addEventListener('click', () => openChat(k));
     li.append(b);
@@ -200,7 +229,7 @@ function renderChat() {
   const certText = !cert ? '' : cert.status === 'valid' ? ` · certified ${cert.label}` : cert.status === 'absent' ? ' · uncertified' : ` · certificate ${cert.status}`;
   $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (pq ? ' · post-quantum' : online ? ' · classical' : '') + certText + (c.verified ? ' · verified' : '');
   $('chat-state').title = cert && cert.status !== 'valid' ? cert.reason : '';
-  $('chat-sub').textContent = [c.number ? 'via ' + core.formatBurnerNumber(c.number) : null, c.pinned ? 'pinned key' : null, c.addr].filter(Boolean).join(' · ');
+  $('chat-sub').textContent = [c.number ? 'via ' + core.formatBurnerNumber(c.number) : null, c.pinned ? 'pinned key' : null, showAddr(c.addr)].filter(Boolean).join(' · ');
   $('chat-reconnect').hidden = online;
   $('chat-drop').disabled = !online;
   $('f-send').querySelector('button').disabled = !online;
@@ -225,7 +254,7 @@ function renderDrop(li, m) {
   const key = hex(d.publicKey);
   li.innerHTML = '<p class="kicker">Key Drop</p><div class="code"></div><div class="who"></div><div class="mono fp"></div>';
   li.querySelector('.code').textContent = d.codename;
-  li.querySelector('.who').textContent = d.name + (d.addresses.length ? ' · ' + d.addresses.join(', ') : '');
+  li.querySelector('.who').textContent = d.name + (d.addresses.length ? ' · ' + d.addresses.map(showAddr).join(', ') : '');
   li.querySelector('.fp').textContent = key === hex(me.identity.publicKey()) ? 'Your key' : key.slice(0, 16) + '…';
   if (!m.o && key !== hex(me.identity.publicKey())) {
     const pinned = contacts[key]?.pinned;
@@ -401,6 +430,11 @@ function renderDiag() {
   }
   document.body.dataset.diag = out.every(([, r]) => r === 'Pass') ? 'pass' : 'fail';
 }
+$('geo-routing').addEventListener('change', () => {
+  const on = $('geo-routing').checked;
+  store.set('aether.geo', on);
+  applyGeoRouting(on);
+});
 $('wipe').addEventListener('click', () => {
   if (!confirm('Wipe this browser identity and every message stored here?')) return;
   links.forEach((l) => l.fs.close());
@@ -421,6 +455,7 @@ $('f-enroll').addEventListener('submit', (e) => {
 
 await init();
 $('core-ver').textContent = 'core ' + core.coreVersion();
+if (geoStored() !== null) applyGeoRouting(geoStored());
 const saved = store.get('aether.id', null);
 if (saved) {
   me = { identity: core.Identity.fromSecret(unhex(saved.s)), name: saved.n };

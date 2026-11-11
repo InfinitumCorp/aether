@@ -12,3 +12,5 @@ web/wasm/target/
 web/bridge/node_modules/
 .wrangler/
 .cloudflare/
+# v2fly geo datasets from `cargo run --bin fetch-geo`. Never commit the binaries.
+data/geo/

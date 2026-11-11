@@ -26,8 +26,20 @@
 //!
 //! Output is one JSON object on stdout, like cfssl. The CA key file holds the 32-byte secret
 //! seed in hex; keep it offline.
+//!
+//! Geo routing (off by default; connections are unchanged while it is off):
+//!
+//! ```text
+//! aether-ca --geo on|off|status
+//! aether-ca geo on|off|status
+//! ```
+//!
+//! `--geo on` and `--geo off` persist in the geo config (`AETHER_GEO_CONFIG`, or
+//! `~/.config/aether/geo.conf`) and arm the in-process switch that `INFINITUM_GEO_ENABLED` also
+//! controls. A missing config file leaves the switch off unless that env var is already set.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -183,7 +195,7 @@ fn cert_json(c: &DeviceCertificate, extra: &str) -> String {
 }
 
 fn run(args: &[String]) -> Result<String, String> {
-    let cmd = args.first().ok_or("usage: aether-ca init|sign|verify|info|register-ca|revoke|status [flags]")?;
+    let cmd = args.first().ok_or("usage: aether-ca [--geo on|off|status] init|sign|verify|info|register-ca|revoke|status [flags]")?;
     let mut flags = HashMap::new();
     let mut it = args[1..].iter();
     while let Some(k) = it.next() {
@@ -277,13 +289,101 @@ fn run(args: &[String]) -> Result<String, String> {
     }
 }
 
+#[derive(Debug)]
+enum GeoFlag {
+    Absent,
+    Set(bool),
+    Status,
+}
+
+#[derive(Debug)]
+enum GeoFlagOutcome {
+    Continue,
+    Done(String),
+}
+
+fn parse_geo_switch(v: &str) -> Result<GeoFlag, String> {
+    match v.to_ascii_lowercase().as_str() {
+        "on" | "true" | "1" | "enable" | "enabled" => Ok(GeoFlag::Set(true)),
+        "off" | "false" | "0" | "disable" | "disabled" => Ok(GeoFlag::Set(false)),
+        "status" => Ok(GeoFlag::Status),
+        _ => Err(format!("--geo expects on, off, or status (got {v})")),
+    }
+}
+
+/// Pulls `--geo <value>` (or a `geo` subcommand) out of `args`.
+fn extract_geo_flag(args: &mut Vec<String>) -> Result<GeoFlag, String> {
+    if args.first().map(String::as_str) == Some("geo") {
+        if args.len() > 2 {
+            return Err("usage: aether-ca geo on|off|status".into());
+        }
+        let value = args.get(1).cloned().unwrap_or_else(|| "status".into());
+        *args = vec!["--geo".into(), value];
+    }
+    let Some(i) = args.iter().position(|a| a == "--geo" || a.starts_with("--geo=")) else {
+        return Ok(GeoFlag::Absent);
+    };
+    let value = if let Some(rest) = args[i].strip_prefix("--geo=") {
+        let v = rest.to_owned();
+        args.remove(i);
+        v
+    } else {
+        args.remove(i);
+        if i >= args.len() {
+            return Err("--geo needs on, off, or status".into());
+        }
+        args.remove(i)
+    };
+    parse_geo_switch(&value)
+}
+
+fn geo_status_json() -> String {
+    format!("{{\"geo_routing\":{}}}", aether_core::geo_routing_enabled())
+}
+
+fn apply_geo_flag(args: &mut Vec<String>, config: &Path) -> Result<GeoFlagOutcome, String> {
+    match extract_geo_flag(args)? {
+        GeoFlag::Absent => Ok(GeoFlagOutcome::Continue),
+        GeoFlag::Status => {
+            if !args.is_empty() {
+                return Err("--geo status cannot be combined with another command".into());
+            }
+            Ok(GeoFlagOutcome::Done(geo_status_json()))
+        }
+        GeoFlag::Set(enabled) => {
+            aether_core::geo::save_geo_config(config, enabled).map_err(|e| e.to_string())?;
+            aether_core::set_geo_routing(enabled);
+            if args.is_empty() {
+                Ok(GeoFlagOutcome::Done(geo_status_json()))
+            } else {
+                Ok(GeoFlagOutcome::Continue)
+            }
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match run(&args) {
-        Ok(out) => {
+    let config = aether_core::geo::geo_config_path();
+    if let Err(e) = aether_core::geo::apply_geo_config(&config) {
+        eprintln!("aether-ca: {e}");
+        return ExitCode::FAILURE;
+    }
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    match apply_geo_flag(&mut args, &config) {
+        Ok(GeoFlagOutcome::Done(out)) => {
             println!("{out}");
             ExitCode::SUCCESS
         }
+        Ok(GeoFlagOutcome::Continue) => match run(&args) {
+            Ok(out) => {
+                println!("{out}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("aether-ca: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Err(e) => {
             eprintln!("aether-ca: {e}");
             ExitCode::FAILURE
@@ -293,7 +393,14 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::json_string_field;
+    use super::{apply_geo_flag, extract_geo_flag, json_string_field, GeoFlag, GeoFlagOutcome};
+
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            aether_core::geo::clear_geo_routing_override();
+        }
+    }
 
     #[test]
     fn reads_status_from_compact_and_spaced_json() {
@@ -311,5 +418,42 @@ mod tests {
     fn missing_or_non_string_is_none() {
         assert_eq!(json_string_field(r#"{"label":"A"}"#, "status"), None);
         assert_eq!(json_string_field(r#"{"status":null}"#, "status"), None);
+    }
+
+    #[test]
+    fn geo_flag_persists_and_defaults_off() {
+        let _clear = Clear;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("geo.conf");
+        assert_eq!(aether_core::geo::load_geo_config(&path).unwrap(), None);
+
+        let mut args = vec!["--geo".into(), "off".into()];
+        match apply_geo_flag(&mut args, &path).unwrap() {
+            GeoFlagOutcome::Done(json) => assert_eq!(json, "{\"geo_routing\":false}"),
+            other => panic!("expected a finished geo command, got continuation {other:?}"),
+        }
+        assert!(args.is_empty());
+        assert_eq!(aether_core::geo::load_geo_config(&path).unwrap(), Some(false));
+        assert!(!aether_core::geo_routing_enabled());
+
+        let mut args = vec!["geo".into(), "on".into()];
+        match apply_geo_flag(&mut args, &path).unwrap() {
+            GeoFlagOutcome::Done(json) => assert_eq!(json, "{\"geo_routing\":true}"),
+            other => panic!("expected a finished geo command, got continuation {other:?}"),
+        }
+        assert_eq!(aether_core::geo::load_geo_config(&path).unwrap(), Some(true));
+        assert!(aether_core::geo_routing_enabled());
+
+        let mut args = vec!["sign".into(), "--geo=off".into(), "--key".into(), "ca.key".into()];
+        assert!(matches!(apply_geo_flag(&mut args, &path).unwrap(), GeoFlagOutcome::Continue));
+        assert_eq!(args, vec!["sign".to_string(), "--key".to_string(), "ca.key".to_string()]);
+        assert_eq!(aether_core::geo::load_geo_config(&path).unwrap(), Some(false));
+
+        let mut args = vec!["--geo".into()];
+        assert!(extract_geo_flag(&mut args).is_err());
+        let mut args = vec!["--geo".into(), "maybe".into()];
+        assert!(extract_geo_flag(&mut args).unwrap_err().contains("on, off, or status"));
+        let mut status = vec!["--geo".into(), "status".into()];
+        assert!(matches!(extract_geo_flag(&mut status).unwrap(), GeoFlag::Status));
     }
 }

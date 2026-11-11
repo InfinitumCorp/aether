@@ -18,6 +18,23 @@ pub fn core_version() -> String {
     core::core_version()
 }
 
+/// Settings toggle. Off (the default) leaves peer labels unchanged.
+#[wasm_bindgen(js_name = setGeoRouting)]
+pub fn set_geo_routing(enabled: bool) {
+    core::set_geo_routing(enabled);
+}
+
+#[wasm_bindgen(js_name = geoRoutingEnabled)]
+pub fn geo_routing_enabled() -> bool {
+    core::geo_routing_enabled()
+}
+
+/// Peer label. Returns `endpoint` unchanged while geo routing is off.
+#[wasm_bindgen(js_name = describeEndpoint)]
+pub fn describe_endpoint(endpoint: String) -> String {
+    core::describe_endpoint(endpoint)
+}
+
 #[wasm_bindgen]
 pub struct Identity(Arc<core::Identity>);
 

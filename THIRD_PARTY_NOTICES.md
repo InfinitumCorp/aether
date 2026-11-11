@@ -42,6 +42,30 @@ is ÆTHER's own (not X.509).
 | [rustls](https://github.com/rustls/rustls) 0.23.46, [webpki-roots](https://github.com/rustls/webpki-roots) 0.26.11 / 1.0.11 | via ureq | Apache-2.0 OR ISC OR MIT (MIT); webpki-roots: CDLA-Permissive-2.0 | TLS for `aether-ca` (registry feature only) |
 | [ring](https://github.com/briansmith/ring) 0.17.14, [rustls-webpki](https://github.com/rustls/webpki) 0.103.16, [untrusted](https://github.com/briansmith/untrusted) 0.9.0 | via rustls | ring: Apache-2.0 AND ISC; the others ISC | Crypto and certificate checks for rustls in `aether-ca` (registry feature only) |
 
+## Geo datasets (added 2026-11-09)
+
+Fetched on demand by `cargo run --bin fetch-geo` (lockfile `core/geo.lock`) into the gitignored
+directory `data/geo/`. The binaries are not committed. Checksums were checked on 2026-11-09
+against the official `.sha256sum` release assets. Loyalsoldier and sing-box geo lists are not
+used: they are GPL-3.
+
+| Dataset | Project | Tag | Asset | Licence | SHA-256 |
+|---|---|---|---|---|---|
+| `geoip.dat` | [v2fly/geoip](https://github.com/v2fly/geoip) | `202611080027` | `geoip.dat` | CC-BY-SA-4.0 | `eedb24b3b9fcba27e06b92c0428dab90d9496083091ae4cf39e11387fd99d0e2` |
+| `geosite.dat` | [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) | `20261108011013` | `dlc.dat` (saved as `geosite.dat`) | MIT | `dc4192dd1b644a38276ed06136d26e729fa674d25785adb38c87e040e92376b2` |
+
+GeoIP data © the v2fly contributors, used unmodified under the Creative Commons
+Attribution-ShareAlike 4.0 International licence
+(<https://creativecommons.org/licenses/by-sa/4.0/>). Attribution: v2fly geoip,
+<https://github.com/v2fly/geoip/releases/tag/202611080027>. An adaptation of this dataset must
+stay under CC-BY-SA-4.0. ÆTHER does not modify the file.
+
+domain-list-community © 2018-2019 V2Ray, MIT. The copyright notice and permission notice are
+the MIT text below. Source: <https://github.com/v2fly/domain-list-community/releases/tag/20261108011013>.
+
+Geo routing is off unless `INFINITUM_GEO_ENABLED` is `on` (or `1` / `true` / `yes`) or the
+operator turns the settings switch on. While it is off, peer labels and connections are unchanged.
+
 ## Licence texts
 
 ### MIT (components marked MIT above)
@@ -64,7 +88,8 @@ is ÆTHER's own (not X.509).
 Copyright holders: the RustCrypto Developers (ml-kem, kem, hybrid-array, sha3, keccak, ed25519,
 signature, chacha20poly1305, blake2, sha2, zeroize); Jake McGinty and contributors (snow); the Rand
 Project Developers (rand_core); David Tolnay (thiserror); the wasm-bindgen Developers
-(wasm-bindgen); Einar Otto Stangvik, Arnout Kazemier, Luigi Pinca and contributors (ws).
+(wasm-bindgen); Einar Otto Stangvik, Arnout Kazemier, Luigi Pinca and contributors (ws);
+V2Ray (domain-list-community, the `geosite.dat` dataset).
 
 ### BSD-3-Clause (ed25519-dalek, x25519-dalek, curve25519-dalek)
 
