@@ -22,12 +22,22 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         ndk { abiFilters += abis }
+        // Ads stay off until ADS_ENABLED is flipped to true.
+        buildConfigField("boolean", "ADS_ENABLED", "false")
+        buildConfigField("String", "ADMOB_BANNER_ID", "\"ca-app-pub-3940256099942544/6300978111\"")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "ADS_ENABLED", "false")
+            buildConfigField("String", "ADMOB_BANNER_ID", "\"ca-app-pub-3940256099942544/6300978111\"")
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")
+            // Flip ADS_ENABLED to true to serve the real banner in release. Off until then.
+            buildConfigField("boolean", "ADS_ENABLED", "false")
+            buildConfigField("String", "ADMOB_BANNER_ID", "\"ca-app-pub-7308175971826620/9583713999\"")
         }
     }
 
@@ -36,7 +46,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     sourceSets["main"].java.srcDir(layout.buildDirectory.dir("generated/uniffi/kotlin"))
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("generated/uniffi/jniLibs"))
@@ -132,4 +145,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
+    implementation("com.google.android.gms:play-services-ads:24.7.0")
+    implementation("com.google.android.ump:user-messaging-platform:3.2.0")
 }
