@@ -36,7 +36,14 @@ data class StoredMessage(
     val drop: Boolean = false,
     /** Burner number id this conversation runs under, or null for the real identity. */
     val via: String? = null,
-)
+    /** [KIND_POSITION] or [KIND_FIELD] when [body] is an encoded position report or field message. */
+    val kind: String? = null,
+) {
+    companion object {
+        const val KIND_POSITION = "pos"
+        const val KIND_FIELD = "field"
+    }
+}
 
 /**
  * An add-on bundle of burner-number slots (1, 2 or 5), renewed every [period]
@@ -71,7 +78,7 @@ object EventLog {
 
     fun messageJson(m: StoredMessage): JSONObject =
         JSONObject().put("t", "msg").put("k", m.peerKeyHex).put("o", m.outgoing).put("ts", m.sentAtMs)
-            .put("b", m.body).put("d", m.drop)
+            .put("b", m.body).put("d", m.drop).put("y", m.kind ?: "")
 
     /** Replays contact/message events; other event types are ignored. Keys are conversation keys. */
     fun replay(events: List<JSONObject>, via: String?): Pair<Map<String, Contact>, List<StoredMessage>> {
@@ -92,6 +99,7 @@ object EventLog {
             }
             "msg" -> messages += StoredMessage(
                 o.getString("k"), o.getBoolean("o"), o.getLong("ts"), o.getString("b"), o.optBoolean("d"), via,
+                o.optString("y").ifEmpty { null },
             )
         }
         return contacts to messages
@@ -119,6 +127,20 @@ class Store(context: Context) {
             identityVault = Vault.open(File(dir, "identity.vault").path, key)
             logVault = Vault.open(File(dir, "messages.vault").path, key)
             numbersVault = Vault.open(File(dir, "numbers.vault").path, key)
+        } finally {
+            key.fill(0)
+        }
+    }
+
+    /**
+     * Opens (or creates) another encrypted vault under the same hardware-wrapped key, for the
+     * Maps, Field and eidetic stores. The data key is wiped from memory after opening.
+     */
+    fun openVault(name: String): Vault {
+        require(name.matches(Regex("[a-z0-9-]{1,32}"))) { "bad vault name" }
+        val key = keys.dataKey()
+        try {
+            return Vault.open(File(dir, "$name.vault").path, key)
         } finally {
             key.fill(0)
         }

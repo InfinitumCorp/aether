@@ -1,5 +1,6 @@
 package com.infinitum.aether
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
@@ -11,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.infinitum.aether.cid.CidAccount
 import com.infinitum.aether.net.AetherNode
 import com.infinitum.aether.ui.AetherRoot
 import com.infinitum.aether.ui.AetherTheme
@@ -37,6 +39,10 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         val app = application as AetherApp
+        // Cumulus ID: open the stored sign-in, pick a reachable host (Russia mirror when needed),
+        // and take a redirect that launched this activity. Not again after a configuration change.
+        CidAccount.start(app)
+        if (savedInstanceState == null) handleCidReturn(intent)
         setContent {
             AetherTheme {
                 var loading by remember { mutableStateOf(true) }
@@ -57,8 +63,23 @@ class MainActivity : ComponentActivity() {
                     keyBacking = { app.store.keyBacking },
                     onCreateProfile = { name -> withContext(Dispatchers.IO) { app.createProfile(name) }.also { node = it } },
                     scratchDir = cacheDir,
+                    features = { app.features },
                 )
             }
+        }
+    }
+
+    // launchMode="singleTask": the Cumulus ID redirect comes back to this instance.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleCidReturn(intent)
+    }
+
+    private fun handleCidReturn(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (intent.action == Intent.ACTION_VIEW && CidAccount.handleReturn(data.toString())) {
+            // Do not process the same code twice.
+            setIntent(Intent(this, MainActivity::class.java))
         }
     }
 }

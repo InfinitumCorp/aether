@@ -216,6 +216,10 @@ pub fn field_verify_packet(packet: Packet) -> bool {
     packet_proof(&packet) == packet.proof
 }
 
+fn round7(v: f64) -> f64 {
+    (v * 1e7).round() / 1e7
+}
+
 /// Refines a capture into a packet. `release` must be true for a protected place.
 #[uniffi::export]
 pub fn field_refine(capture: Capture, release: bool, now_ms: i64) -> Result<RefineOutcome, AetherError> {
@@ -259,8 +263,9 @@ pub fn field_refine(capture: Capture, release: bool, now_ms: i64) -> Result<Refi
         observation,
         place_label: label,
         place_class: capture.place_class,
-        lat: capture.lat,
-        lon: capture.lon,
+        // The wire format carries 7 decimals (about 1 cm); round here so the proof survives the trip.
+        lat: capture.lat.map(round7),
+        lon: capture.lon.map(round7),
         at_ms: capture.at_ms,
         quality: quality.min(100),
         redactions,
@@ -624,5 +629,15 @@ mod tests {
         .unwrap()
         .replace("Bridge intact", "Bridge down");
         assert!(decode_field_message(tampered).is_err());
+    }
+
+    #[test]
+    fn full_precision_gps_survives_the_wire() {
+        let c = Capture { lat: Some(46.123456789012345), lon: Some(-7.987654321098765), ..cap(PlaceClass::Field) };
+        let packet = field_refine(c, false, 0).unwrap().packet.unwrap();
+        let fm = FieldMessage { packet: Some(packet), mission: None };
+        let back = decode_field_message(encode_field_message(fm.clone()).unwrap()).unwrap();
+        assert_eq!(back, fm);
+        assert!(field_verify_packet(back.packet.unwrap()));
     }
 }

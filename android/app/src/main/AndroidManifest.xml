@@ -8,6 +8,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- ÆTHER Maps™: on-device GPS only (no network location, no Play services). -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.compass" android:required="false" />
 
     <application
         android:name=".AetherApp"
@@ -22,10 +28,19 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Cumulus ID return: com.infinitum.aether:/cid/return?code&state (RFC 8252 private-use scheme).
+                 Android ignores path attributes without a host, so CumulusId.parseReturn checks the path. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="com.infinitum.aether" />
             </intent-filter>
         </activity>
         <service
@@ -36,5 +51,9 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Peer-to-peer encrypted messaging node: keeps the device reachable by teammates on the local mesh." />
         </service>
+        <service
+            android:name=".TrackService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
     </application>
 </manifest>
