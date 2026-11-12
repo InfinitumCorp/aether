@@ -1,0 +1,80 @@
+# Auto deploy to Cloudflare, every 30 minutes.
+#
+# Each run deploys only when main's latest commit is not deployed yet AND every other check on that
+# commit finished green. Deploys are recorded as GitHub "production" deployments, so the next run
+# knows what is live. Run it by hand from the Actions tab ("Run workflow"); tick "force" to redeploy.
+#
+# Needs two secrets, added by a person (repository or organization level):
+#   CLOUDFLARE_API_TOKEN   (Workers Scripts: Edit, Pages: Edit, Account: Read)
+#   CLOUDFLARE_ACCOUNT_ID
+# Without them every run is a no-op that says so, instead of failing.
+name: Auto deploy
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Deploy even if this commit is already deployed or CI is not green
+        type: boolean
+        default: false
+concurrency:
+  group: auto-deploy
+  cancel-in-progress: false
+permissions:
+  contents: read
+  checks: read
+  deployments: read
+jobs:
+  gate:
+    name: auto-deploy gate
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.gate.outputs.go }}
+    steps:
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          sha="$GITHUB_SHA"
+          say() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+          if [ "$HAS_TOKEN" != "true" ]; then say "CLOUDFLARE_API_TOKEN is not set for this repository; nothing deployed."; echo go=false >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$FORCE" = "true" ]; then say "Forced deploy of $sha."; echo go=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&sha=$sha&per_page=10" --jq '.[].id'); do
+            if [ "$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" --jq '.[0].state // ""')" = "success" ]; then
+              say "$sha is already deployed."; echo go=false >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          done
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?per_page=100" --jq '[.check_runs[] | select(.name != "auto-deploy gate" and .name != "auto-deploy")]')
+          pending=$(echo "$runs" | jq '[.[] | select(.status != "completed")] | length')
+          failed=$(echo "$runs" | jq '[.[] | select(.status == "completed" and ((.conclusion == "success" or .conclusion == "skipped" or .conclusion == "neutral") | not))] | length')
+          if [ "$pending" != "0" ]; then say "CI is still running on $sha; the next run will try again."; echo go=false >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$failed" != "0" ]; then say "CI failed on $sha; not deploying."; echo go=false >> "$GITHUB_OUTPUT"; exit 0; fi
+          say "Deploying $sha."; echo go=true >> "$GITHUB_OUTPUT"
+  deploy:
+    name: auto-deploy
+    needs: gate
+    if: needs.gate.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy Web Worker
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 deploy
+      - name: Deploy Pages aether-mil
+        working-directory: .
+        run: |
+          set -euo pipefail
+          npx -y wrangler@4 pages deploy web/app --project-name aether-mil --branch main --commit-dirty=true
