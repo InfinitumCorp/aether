@@ -83,6 +83,16 @@ can dial nodes but can't accept inbound connections; it has no burner numbers of
   code. Add-on bundles of 1, 2 or 5 numbers, renewed monthly or yearly. See [docs/BURNER_NUMBERS.md](docs/BURNER_NUMBERS.md).
 - **Device hardening.** No backups or device transfer of app data; `FLAG_SECURE` in release builds.
 - **Diagnostics** with an on-device self-test of the security core.
+- **ÆTHER Maps™ core** (AlpineQuest-style offline navigation): coordinates in decimal, DMS, DDM, UTM and
+  MGRS (format and parse), WGS 84 distance and bearing, waypoint projection, path length and area, track
+  statistics with elevation profile, MBTiles tile math, GPX import/export, KML export, and positions or
+  markers shared end-to-end encrypted over ÆTHER Talk™.
+- **ÆTHER Field™ core** (from HRVST): capture → contact-detail redaction → sealed packet, and tasking
+  (post, claim, submit, accept, reject, release, cancel) between devices. Protected places (hospital,
+  school, residence) stay on the device and can't be tasked. No market or credits.
+- **ÆTHER eidetic MIL™ core** (from eidetic): checkpoint, access, personnel-recovery and casualty
+  identification only, against enrolled and consented rosters; every match goes to a reviewer who did
+  not run the search; every step is in a hash-chained audit log that never holds biometric data.
 
 Verified on a TECNO KM4 (Android 15, arm64): all 5 on-device checks pass with TEE-backed keys.
 

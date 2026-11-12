@@ -30,7 +30,9 @@ later) is a thin shell that moves opaque byte buffers between transports, the UI
 |---|---|---|
 | ÆTHER Mobile MIL™ | Hardened, organization-controlled Android application | **Built**: app shell, hardening, diagnostics. Organization enrollment and managed-device policy not yet. A browser client (ÆTHER MIL™ Web, `web/`) runs the same core as WebAssembly and reaches nodes through a local frame bridge |
 | ÆTHER Talk™ | Encrypted messaging, voice, video, files, push-to-talk, on-device AI | **Partial**: 1:1 encrypted text, Key Drop, burner numbers (text). Groups, PTT, voice/video, files, on-device AI not yet |
-| ÆTHER Maps™ | Offline GPS, topographic maps, waypoints, routes | Not started |
+| ÆTHER Maps™ | Offline GPS, topographic maps, waypoints, routes | **Partial**: core (`core/src/nav.rs`, `gpx.rs`) has DD/DMS/DDM/UTM/MGRS, Vincenty distance/bearing/projection, area, track stats, elevation profile, simplification, MBTiles tile math, GPX/KML and encrypted position sharing. Android Maps screen in progress |
+| ÆTHER Field™ | Field reporting and tasking (from HRVST) | **Partial**: core (`core/src/field.rs`) has capture → redaction → sealed packet, protected places kept on the device, and the mission lifecycle, shared over Talk. Android screen in progress |
+| ÆTHER eidetic MIL™ | Identity verification for force protection (from eidetic) | **Partial**: core (`core/src/eidetic.rs`, `audit.rs`) has the policy gate (checkpoint, access, personnel recovery, casualty ID only), roster-only 1:N matching, mandatory review by someone other than the searcher, and a hash-chained audit that refuses biometric data. No on-device face model; templates come from an approved capture station. Android desk in progress |
 | ÆTHER Radio™ | Interfaces for approved military digital radios | Not started |
 | ÆTHER Mesh™ | Authenticated peer-to-peer and multi-hop field networking | **Partial**: authenticated single-hop over Wi-Fi/LAN with mDNS discovery. Multi-hop relay not yet |
 | ÆTHER Node™ | Portable relays and ruggedized network appliances | Not started (the Rust core is designed to run on nodes) |
