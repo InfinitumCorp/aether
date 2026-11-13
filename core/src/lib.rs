@@ -1,6 +1,6 @@
-//! ÆTHER security core.
+//! Г†THER security core.
 //!
-//! One Rust crate shared by every ÆTHER client (Android first, iOS later).
+//! One Rust crate shared by every Г†THER client (Android first, iOS later).
 //! It owns all cryptography so the platform layers never touch raw key
 //! material beyond opaque byte buffers:
 //!
@@ -17,16 +17,37 @@
 
 uniffi::setup_scaffolding!();
 
+mod audit;
 mod burner;
 mod devicecert;
+mod eidetic;
 mod envelope;
 mod error;
+mod field;
 mod fingerprint;
+mod gpx;
 mod hello;
 mod identity;
 mod keydrop;
+mod nav;
 mod session;
 mod vault;
+
+pub use audit::{audit_append, audit_verify, AuditEntry};
+pub use eidetic::{
+    eidetic_authorize, eidetic_check_enrollment, eidetic_decide, eidetic_match, eidetic_open_review, EideticDataset,
+    EideticPurpose, EideticRole, EnrolledTemplate, MatchCandidate, MatchResult, PolicyDecision, Review, ReviewOutcome,
+    SearchRequest,
+};
+pub use field::{
+    decode_field_message, encode_field_message, field_refine, field_verify_packet, mission_accept, mission_cancel,
+    mission_claim, mission_post, mission_reject, mission_release, mission_submit, place_is_protected, Capture,
+    FieldMessage, Mission, MissionState, Packet, PlaceClass, Precedence, RefineOutcome,
+};
+pub use gpx::{
+    decode_position, encode_position, parse_gpx, write_gpx, write_kml, GpxDocument, PositionKind, PositionReport, Route,
+    Track, TrackSegment, Waypoint,
+};
 
 pub use burner::{
     burn_code_hash, burner_number, burner_number_matches, format_burner_number, generate_burn_code,
@@ -41,6 +62,12 @@ pub use error::AetherError;
 pub use fingerprint::{fingerprint, safety_number};
 pub use hello::{check_peer_certificate, decode_hello, encode_hello, Hello, PeerCertStatus, PeerCertificate};
 pub use identity::Identity;
+pub use nav::{
+    elevation_profile, format_coordinate, from_mgrs, from_utm, geodesic_destination, geodesic_inverse, mercator_unit,
+    parse_coordinate, path_length, polygon_area, polygon_perimeter, simplify_track, tile_for_point, tile_origin, tms_row,
+    to_mgrs, to_utm, track_stats, CoordFormat, GeoPoint, Geodesic, ProfilePoint, TileAddress, TrackPoint, TrackStats,
+    UtmCoordinate,
+};
 pub use keydrop::{decode_key_drop, encode_key_drop, suggest_codename, KeyDrop};
 pub use session::{Handshake, Session, LATEST_PROTOCOL, NOISE_PARAMS, NOISE_PARAMS_V2, PROLOGUE, PROLOGUE_V2};
 pub use vault::Vault;

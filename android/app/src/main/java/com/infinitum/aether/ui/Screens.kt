@@ -71,7 +71,10 @@ import com.infinitum.aether.net.LinkState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.text.style.TextDecoration
 import com.infinitum.aether.data.Bundle
+import com.infinitum.aether.data.Features
 import com.infinitum.aether.data.Burner
 import com.infinitum.aether.data.ScopeKind
 import com.infinitum.aether.data.StoredMessage
@@ -89,16 +92,56 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private const val PRODUCT = "ÆTHER MIL™"
+internal const val PRODUCT = "ÆTHER MIL™"
 private const val APP = "ÆTHER Mobile MIL™"
 private const val TAGLINE = "SECURE VOICE, TEXT & DATA · HARDENED COMMUNICATIONS · FIELD MESH"
-private const val GUTTER = 24
+internal const val GUTTER = 24
 
 private sealed interface Screen {
     data object Home : Screen
     data class Chat(val convo: String) : Screen
     data object Numbers : Screen
     data object Diagnostics : Screen
+    data object Maps : Screen
+    data object Field : Screen
+    data object Eidetic : Screen
+}
+
+/** Top-level destinations in the Fabric-style nav row, in order. */
+private val Tabs: List<Pair<String, Screen>> = listOf(
+    "Talk" to Screen.Home,
+    "Maps" to Screen.Maps,
+    "Field" to Screen.Field,
+    "eidetic" to Screen.Eidetic,
+    "Numbers" to Screen.Numbers,
+    "Settings" to Screen.Diagnostics,
+)
+
+/**
+ * FabriC++ navigation row: accent text buttons, the current one underlined in ink.
+ * Scrolls sideways on narrow phones.
+ */
+@Composable
+private fun FabricNav(current: Screen, onOpen: (Screen) -> Unit) {
+    Column(Modifier.fillMaxWidth().statusBarsPadding()) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            for ((label, dest) in Tabs) {
+                val on = current == dest
+                TextButton(onClick = { onOpen(dest) }, modifier = Modifier.testTag("tab_${label.lowercase()}")) {
+                    Text(
+                        label,
+                        color = if (on) Ink else Accent,
+                        style = MaterialTheme.typography.labelLarge,
+                        textDecoration = if (on) TextDecoration.Underline else null,
+                    )
+                }
+            }
+        }
+        Hairline()
+    }
 }
 
 @OptIn(ExperimentalComposeUiApi::class)
@@ -110,6 +153,7 @@ fun AetherRoot(
     keyBacking: () -> String,
     onCreateProfile: suspend (String) -> Unit,
     scratchDir: File,
+    features: () -> Features,
 ) {
     Surface(
         Modifier.fillMaxSize().semantics { testTagsAsResourceId = true },
@@ -119,20 +163,20 @@ fun AetherRoot(
             fatalError != null -> Centered { Text("$PRODUCT could not open its secure store.\n\n$fatalError", color = Alert) }
             loading -> Centered { CircularProgressIndicator(color = Ink, strokeWidth = 1.5.dp) }
             node == null -> Onboarding(onCreateProfile)
-            else -> Shell(node, keyBacking, scratchDir)
+            else -> Shell(node, keyBacking, scratchDir, features)
         }
     }
 }
 
 @Composable
-private fun Centered(content: @Composable () -> Unit) =
+internal fun Centered(content: @Composable () -> Unit) =
     Box(Modifier.fillMaxSize().padding(GUTTER.dp), contentAlignment = Alignment.Center) { content() }
 
 // ---- Brand elements ---------------------------------------------------------------
 
 /** Top bar used on every screen: product name (or back link) left, text actions right. */
 @Composable
-private fun BrandBar(
+internal fun BrandBar(
     onBack: (() -> Unit)? = null,
     backTag: String = "back",
     actions: @Composable () -> Unit = {},
@@ -160,7 +204,7 @@ private fun BrandBar(
 }
 
 @Composable
-private fun BarAction(label: String, tag: String, onClick: () -> Unit) = Text(
+internal fun BarAction(label: String, tag: String, onClick: () -> Unit) = Text(
     label,
     style = MaterialTheme.typography.labelLarge,
     color = Ink,
@@ -168,15 +212,15 @@ private fun BarAction(label: String, tag: String, onClick: () -> Unit) = Text(
 )
 
 @Composable
-private fun Kicker(text: String, modifier: Modifier = Modifier, color: Color = Body) =
+internal fun Kicker(text: String, modifier: Modifier = Modifier, color: Color = Body) =
     Text(text.uppercase(), style = MaterialTheme.typography.labelSmall, color = color, modifier = modifier)
 
 @Composable
-private fun Hairline(color: Color = Rule) = HorizontalDivider(thickness = 1.dp, color = color)
+internal fun Hairline(color: Color = Rule) = HorizontalDivider(thickness = 1.dp, color = color)
 
 /** Numbered section header with a rule above it, as on the product pages ("01 / OVERVIEW"). */
 @Composable
-private fun Section(number: Int, title: String) {
+internal fun Section(number: Int, title: String) {
     Column(Modifier.fillMaxWidth().padding(top = 36.dp, bottom = 4.dp)) {
         Hairline(RuleStrong)
         Spacer(Modifier.height(10.dp))
@@ -186,14 +230,14 @@ private fun Section(number: Int, title: String) {
 
 /** Square status mark: filled ink = live session, outlined = offline. */
 @Composable
-private fun StatusMark(online: Boolean) = Box(
+internal fun StatusMark(online: Boolean) = Box(
     Modifier.size(8.dp).then(
         if (online) Modifier.background(Ink) else Modifier.border(1.dp, RuleStrong),
     ),
 )
 
 @Composable
-private fun PrimaryButton(text: String, enabled: Boolean, tag: String, modifier: Modifier = Modifier, onClick: () -> Unit) = Button(
+internal fun PrimaryButton(text: String, enabled: Boolean, tag: String, modifier: Modifier = Modifier, onClick: () -> Unit) = Button(
     onClick = onClick,
     enabled = enabled,
     shape = MaterialTheme.shapes.small,
@@ -203,7 +247,7 @@ private fun PrimaryButton(text: String, enabled: Boolean, tag: String, modifier:
 ) { Text(text, style = MaterialTheme.typography.labelLarge) }
 
 @Composable
-private fun fieldColors() = OutlinedTextFieldDefaults.colors(
+internal fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = Ink,
     unfocusedBorderColor = RuleStrong,
     disabledBorderColor = Rule,
@@ -216,9 +260,22 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 
 @Composable
 private fun Onboarding(onCreate: suspend (String) -> Unit) {
+    // Cumulus ID signs the operator in first; the hardware-backed identity key is created after.
+    val cid = com.infinitum.aether.cid.CidAccount
+    val session = cid.session?.takeIf { it.freshForOnboarding() }
+    val context = LocalContext.current
     var name by rememberSaveable { mutableStateOf("") }
+    var prefilledFor by rememberSaveable { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    var advanced by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    LaunchedEffect(session?.profile?.cid) {
+        // Start from the name in the verified ID token; the operator edits it before confirming.
+        if (session != null && prefilledFor != session.profile.cid) {
+            name = session.profile.suggestedCallSign
+            prefilledFor = session.profile.cid
+        }
+    }
     Column(Modifier.fillMaxSize().imePadding()) {
         BrandBar()
         Column(
@@ -243,24 +300,79 @@ private fun Onboarding(onCreate: suspend (String) -> Unit) {
             Spacer(Modifier.height(40.dp))
             Hairline(RuleStrong)
             Spacer(Modifier.height(10.dp))
-            Kicker("01 / Operator identity")
+            Kicker("01 / Sign in")
             Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it.take(40) },
-                label = { Text("Call sign or display name") },
-                singleLine = true,
-                shape = MaterialTheme.shapes.small,
-                colors = fieldColors(),
-                modifier = Modifier.fillMaxWidth().testTag("onboarding_name"),
-            )
-            Spacer(Modifier.height(16.dp))
-            PrimaryButton(
-                text = if (busy) "Generating keys…" else "Create secure identity  ↗",
-                enabled = name.isNotBlank() && !busy,
-                tag = "onboarding_create",
-                modifier = Modifier.fillMaxWidth(),
-            ) { busy = true; scope.launch { onCreate(name.trim()) } }
+            if (session == null) {
+                Text(
+                    "$PRODUCT signs operators in with Cumulus ID. No password or PIN is stored in the app.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Body,
+                )
+                Spacer(Modifier.height(16.dp))
+                PrimaryButton(
+                    text = if (cid.busy) "Verifying sign-in…" else "Sign in with Cumulus ID  ↗",
+                    enabled = cid.loaded && !cid.busy,
+                    tag = "cid_sign_in",
+                    modifier = Modifier.fillMaxWidth(),
+                ) { cid.begin(context, create = false) }
+                Spacer(Modifier.height(10.dp))
+                androidx.compose.material3.OutlinedButton(
+                    onClick = { cid.begin(context, create = true) },
+                    enabled = cid.loaded && !cid.busy,
+                    shape = MaterialTheme.shapes.small,
+                    border = BorderStroke(1.dp, Ink),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink),
+                    contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("cid_create"),
+                ) { Text("Create a Cumulus ID", style = MaterialTheme.typography.labelLarge) }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "No Cumulus ID yet? Create one in the same step. You come back here signed in.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Body,
+                )
+                cid.error?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = Alert, modifier = Modifier.testTag("cid_error"))
+                }
+                TextButton(onClick = { advanced = !advanced }, modifier = Modifier.testTag("cid_advanced")) {
+                    Text(if (advanced) "Hide advanced" else "Advanced", color = Ink)
+                }
+                if (advanced) {
+                    Text("Cumulus ID ${cid.issuer}", style = MaterialTheme.typography.bodySmall, color = Body, modifier = Modifier.testTag("cid_issuer"))
+                }
+            } else {
+                Text(
+                    "Signed in with Cumulus ID as ${session.profile.display}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Ink,
+                    modifier = Modifier.testTag("cid_signed_in"),
+                )
+                TextButton(onClick = { cid.signOut() }, enabled = !busy, modifier = Modifier.testTag("cid_switch")) {
+                    Text("Use a different Cumulus ID", color = Ink)
+                }
+                Spacer(Modifier.height(24.dp))
+                Hairline(RuleStrong)
+                Spacer(Modifier.height(10.dp))
+                Kicker("02 / Operator identity")
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it.take(40) },
+                    label = { Text("Call sign or display name") },
+                    singleLine = true,
+                    shape = MaterialTheme.shapes.small,
+                    colors = fieldColors(),
+                    modifier = Modifier.fillMaxWidth().testTag("onboarding_name"),
+                )
+                Spacer(Modifier.height(16.dp))
+                PrimaryButton(
+                    text = if (busy) "Generating keys…" else "Create secure identity  ↗",
+                    enabled = name.isNotBlank() && !busy,
+                    tag = "onboarding_create",
+                    modifier = Modifier.fillMaxWidth(),
+                ) { busy = true; scope.launch { onCreate(name.trim()) } }
+            }
             Spacer(Modifier.height(40.dp))
         }
         Hairline()
@@ -275,7 +387,7 @@ private fun Onboarding(onCreate: suspend (String) -> Unit) {
 // ---- Shell ----------------------------------------------------------------------------
 
 @Composable
-private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File) {
+private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File, features: () -> Features) {
     var screen by remember { mutableStateOf<Screen>(Screen.Home) }
     val snackbar = remember { SnackbarHostState() }
     val event by node.events.collectAsState()
@@ -288,17 +400,24 @@ private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File) 
         containerColor = Paper,
         contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0),
     ) { pad ->
-        Box(Modifier.padding(pad)) {
-            when (val s = screen) {
-                Screen.Home -> Home(
-                    node,
-                    onOpenChat = { screen = Screen.Chat(it) },
-                    onDiagnostics = { screen = Screen.Diagnostics },
-                    onNumbers = { screen = Screen.Numbers },
-                )
-                is Screen.Chat -> Chat(node, s.convo, onBack = { screen = Screen.Home })
-                Screen.Numbers -> Numbers(node, onBack = { screen = Screen.Home })
-                Screen.Diagnostics -> Diagnostics(node, keyBacking(), scratchDir, onBack = { screen = Screen.Home })
+        Column(Modifier.padding(pad)) {
+            val tab = Tabs.any { it.second == screen }
+            if (tab) FabricNav(screen) { screen = it }
+            Box(Modifier.weight(1f)) {
+                when (val s = screen) {
+                    Screen.Home -> Home(
+                        node,
+                        onOpenChat = { screen = Screen.Chat(it) },
+                        onDiagnostics = { screen = Screen.Diagnostics },
+                        onNumbers = { screen = Screen.Numbers },
+                    )
+                    is Screen.Chat -> Chat(node, s.convo, onBack = { screen = Screen.Home })
+                    Screen.Numbers -> Numbers(node, onBack = { screen = Screen.Home })
+                    Screen.Diagnostics -> Diagnostics(node, keyBacking(), scratchDir, onBack = { screen = Screen.Home })
+                    Screen.Maps -> MapsScreen(node, features().maps)
+                    Screen.Field -> FieldScreen(node, features().field)
+                    Screen.Eidetic -> EideticScreen(node, features().eidetic)
+                }
             }
         }
     }
@@ -314,8 +433,6 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
 
     Column(Modifier.fillMaxSize()) {
         BrandBar(actions = {
-            BarAction("Numbers", "open_numbers", onNumbers)
-            BarAction("Diagnostics", "open_diagnostics", onDiagnostics)
             BarAction("Connect +", "open_connect") { showConnect = true }
         })
         LazyColumn(
@@ -374,7 +491,7 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
 }
 
 @Composable
-private fun ListRow(
+internal fun ListRow(
     tag: String,
     online: Boolean,
     title: String,
@@ -531,7 +648,7 @@ private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                             .testTag(if (m.outgoing) "msg_out" else "msg_in"),
                     ) {
-                        Text(m.body, style = MaterialTheme.typography.bodyLarge, color = if (m.outgoing) Paper else Ink)
+                        Text(chatBodyText(m), style = MaterialTheme.typography.bodyLarge, color = if (m.outgoing) Paper else Ink)
                         Spacer(Modifier.height(4.dp))
                         Text(
                             fmt.format(Date(m.sentAtMs)),
@@ -618,6 +735,23 @@ private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
 }
 
 // ---- Key Drop ----------------------------------------------------------------------------
+
+/** Position reports and Field messages travel encoded; show a readable line instead of the wire text. */
+private fun chatBodyText(m: StoredMessage): String = when (m.kind) {
+    StoredMessage.KIND_POSITION -> runCatching {
+        val r = uniffi.aether_core.decodePosition(m.body)
+        val at = uniffi.aether_core.formatCoordinate(uniffi.aether_core.GeoPoint(r.lat, r.lon), uniffi.aether_core.CoordFormat.MGRS)
+        val what = if (r.kind == uniffi.aether_core.PositionKind.OWN_FIX) "Position" else "Marker"
+        listOf(what, r.label.ifBlank { null }, at).filterNotNull().joinToString(" · ")
+    }.getOrDefault("Position (unreadable)")
+    StoredMessage.KIND_FIELD -> runCatching {
+        val f = uniffi.aether_core.decodeFieldMessage(m.body)
+        f.packet?.let { "Field packet ${it.id} · ${it.placeLabel.ifBlank { it.placeClass.name.lowercase() }}" }
+            ?: f.mission?.let { "Field mission ${it.id} · ${it.title} · ${it.state.name.lowercase()}" }
+            ?: "Field message"
+    }.getOrDefault("Field message (unreadable)")
+    else -> m.body
+}
 
 /** A dropped key card in the conversation: codename, operator, fingerprint, and a pin action. */
 @Composable
@@ -1119,6 +1253,7 @@ private fun Diagnostics(node: AetherNode, keyBacking: String, scratchDir: File, 
             Text("Diagnostics", style = MaterialTheme.typography.displaySmall, color = Ink)
             Section(1, "Hardened security architecture")
             SpecRow("Device", APP)
+            SpecRow("Cumulus ID", com.infinitum.aether.cid.CidAccount.signedInLine ?: "Not signed in")
             SpecRow("Security core", coreVersion())
             SpecRow("Hardware-backed keys", keyBacking)
             SpecRow("ÆTHER Talk™ session", "Noise_XXpsk3_25519_ChaChaPoly_BLAKE2s + ML-KEM-768 (v1 fallback)")
@@ -1202,7 +1337,7 @@ private fun DeviceCertificate(node: AetherNode) {
 // ---- Bits ----------------------------------------------------------------------------------
 
 @Composable
-private fun SpecRow(k: String, v: String) {
+internal fun SpecRow(k: String, v: String) {
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
             Text(k, style = MaterialTheme.typography.bodySmall, color = Body, modifier = Modifier.weight(0.42f))
@@ -1213,4 +1348,4 @@ private fun SpecRow(k: String, v: String) {
 }
 
 @Composable
-private fun Hint(text: String) = Text(text, style = MaterialTheme.typography.bodyMedium, color = Body, modifier = Modifier.padding(vertical = 14.dp))
+internal fun Hint(text: String) = Text(text, style = MaterialTheme.typography.bodyMedium, color = Body, modifier = Modifier.padding(vertical = 14.dp))

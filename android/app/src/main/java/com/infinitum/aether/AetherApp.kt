@@ -1,11 +1,13 @@
 package com.infinitum.aether
 
 import android.app.Application
+import com.infinitum.aether.data.Features
 import com.infinitum.aether.data.Store
 import com.infinitum.aether.net.AetherNode
 
 class AetherApp : Application() {
     val store: Store by lazy { Store(this) }
+    val features: Features by lazy { Features(this, store) }
 
     @Volatile
     var node: AetherNode? = null

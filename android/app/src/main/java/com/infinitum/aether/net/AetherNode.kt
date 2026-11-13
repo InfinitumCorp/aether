@@ -30,6 +30,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.aether_core.ChatMessage
+import uniffi.aether_core.FieldMessage
+import uniffi.aether_core.PositionKind
+import uniffi.aether_core.PositionReport
+import uniffi.aether_core.decodeFieldMessage
+import uniffi.aether_core.decodePosition
+import uniffi.aether_core.encodeFieldMessage
+import uniffi.aether_core.encodePosition
 import uniffi.aether_core.Identity
 import uniffi.aether_core.KeyDrop
 import uniffi.aether_core.MessageKind
@@ -170,6 +177,15 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         }
         _contacts.value = allContacts
         _messages.value = allMessages.sortedBy { it.sentAtMs }
+        // Rebuild the map picture and field inbox from received history.
+        for (msg in _messages.value) {
+            if (msg.outgoing) continue
+            val convo = msg.convo
+            when (msg.kind) {
+                StoredMessage.KIND_POSITION -> runCatching { decodePosition(msg.body) }.onSuccess { notePosition(convo, it) }
+                StoredMessage.KIND_FIELD -> runCatching { decodeFieldMessage(msg.body) }.onSuccess { f -> _fieldInbox.update { it + (convo to f) } }
+            }
+        }
         _burners.value = live
         scope.launch { listen(main, PORT) }
         live.forEach(::startBurner)
@@ -378,6 +394,14 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                         Log.w(TAG, "ignored malformed key drop")
                     }
                     MessageKind.BURN -> if (!onRemoteBurn(convo, msg.body)) break
+                    MessageKind.POSITION -> runCatching { decodePosition(msg.body) }.onSuccess { r ->
+                        record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id, kind = StoredMessage.KIND_POSITION))
+                        notePosition(convo, r)
+                    }.onFailure { Log.w(TAG, "ignored malformed position") }
+                    MessageKind.FIELD -> runCatching { decodeFieldMessage(msg.body) }.onSuccess { f ->
+                        record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id, kind = StoredMessage.KIND_FIELD))
+                        _fieldInbox.update { (it + (convo to f)).takeLast(500) }
+                    }.onFailure { Log.w(TAG, "ignored malformed field message") }
                     else -> Unit
                 }
             }
@@ -389,6 +413,47 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         }
         return Outcome.DONE
     }
+
+    // ---- ÆTHER Maps™ and ÆTHER Field™ over Talk ---------------------------------------
+
+    private val _teamPositions = MutableStateFlow<Map<String, PositionReport>>(emptyMap())
+    /** Latest own-position report from each conversation's peer (convo → report). */
+    val teamPositions: StateFlow<Map<String, PositionReport>> = _teamPositions.asStateFlow()
+    private val _markers = MutableStateFlow<List<Pair<String, PositionReport>>>(emptyList())
+    /** Markers teammates have shared (convo → marker), newest last. */
+    val markers: StateFlow<List<Pair<String, PositionReport>>> = _markers.asStateFlow()
+    private val _fieldInbox = MutableStateFlow<List<Pair<String, FieldMessage>>>(emptyList())
+    /** Field packets and mission updates received from teammates (convo → message), newest last. */
+    val fieldInbox: StateFlow<List<Pair<String, FieldMessage>>> = _fieldInbox.asStateFlow()
+
+    private fun notePosition(convo: String, r: PositionReport) {
+        if (r.kind == PositionKind.OWN_FIX) _teamPositions.update { it + (convo to r) }
+        else _markers.update { (it + (convo to r)).takeLast(500) }
+    }
+
+    /** Shares a position or marker with the peer of [convo], end-to-end encrypted. */
+    suspend fun sendPosition(convo: String, report: PositionReport): Result<Unit> = sendEncoded(
+        convo, MessageKind.POSITION, StoredMessage.KIND_POSITION,
+    ) { encodePosition(report) }
+
+    /** Sends a field packet or mission update to the peer of [convo], end-to-end encrypted. */
+    suspend fun sendField(convo: String, message: FieldMessage): Result<Unit> = sendEncoded(
+        convo, MessageKind.FIELD, StoredMessage.KIND_FIELD,
+    ) { encodeFieldMessage(message) }
+
+    private suspend fun sendEncoded(convo: String, kind: MessageKind, tag: String, encode: () -> String): Result<Unit> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val live = links[convo] ?: error("Peer is offline")
+                val body = encode()
+                val now = System.currentTimeMillis()
+                live.link.send(ChatMessage(kind, now.toULong(), body))
+                record(StoredMessage(live.link.remoteKey.toHex(), true, now, body, via = live.local.id, kind = tag))
+            }.onFailure { Log.w(TAG, "send $tag failed", it) }
+        }
+
+    /** Conversations with a live session, for "share to" pickers. */
+    fun onlineConvos(): List<String> = links.keys.toList()
 
     suspend fun send(convo: String, text: String): Boolean = withContext(Dispatchers.IO) {
         val live = links[convo] ?: return@withContext false

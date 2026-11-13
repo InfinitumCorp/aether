@@ -18,6 +18,10 @@ pub enum MessageKind {
     KeyDrop,
     /// Remote burn: `body` is the device's burn code; a match burns every burner number.
     Burn,
+    /// A shared position or map marker; `body` is an encoded [`crate::PositionReport`].
+    Position,
+    /// A field report or tasking update; `body` is an encoded [`crate::FieldMessage`].
+    Field,
 }
 
 impl MessageKind {
@@ -28,6 +32,8 @@ impl MessageKind {
             Self::Ping => 3,
             Self::KeyDrop => 4,
             Self::Burn => 5,
+            Self::Position => 6,
+            Self::Field => 7,
         }
     }
     fn from_byte(b: u8) -> Option<Self> {
@@ -37,6 +43,8 @@ impl MessageKind {
             3 => Self::Ping,
             4 => Self::KeyDrop,
             5 => Self::Burn,
+            6 => Self::Position,
+            7 => Self::Field,
             _ => return None,
         })
     }

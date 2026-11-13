@@ -2,7 +2,7 @@
 name = "aether-core"
 version = "0.1.0"
 edition = "2021"
-description = "ÆTHER shared security core: identity, Noise sessions, message envelopes and the encrypted vault."
+description = "ÆTHER shared core: identity, Noise sessions, envelopes, encrypted vault, Maps navigation, Field tasking and eidetic MIL identity verification."
 license = "UNLICENSED"
 publish = false
 
@@ -30,6 +30,7 @@ zeroize = "1.8.1"
 ml-kem = { version = "0.2.1", features = ["zeroize"] }
 ed25519-dalek = { version = "2.1.1", features = ["rand_core", "zeroize"] }
 kem = "=0.3.0-pre.0"
+quick-xml = "0.37.5"
 ureq = { version = "2.12.1", default-features = false, features = ["tls"], optional = true }
 
 [dev-dependencies]
