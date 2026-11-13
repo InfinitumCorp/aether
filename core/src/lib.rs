@@ -35,9 +35,9 @@ mod vault;
 
 pub use audit::{audit_append, audit_verify, AuditEntry};
 pub use eidetic::{
-    eidetic_authorize, eidetic_check_enrollment, eidetic_decide, eidetic_match, eidetic_open_review, EideticDataset,
-    EideticPurpose, EideticRole, EnrolledTemplate, MatchCandidate, MatchResult, PolicyDecision, Review, ReviewOutcome,
-    SearchRequest,
+    decode_eidetic_message, eidetic_authorize, eidetic_check_enrollment, eidetic_decide, eidetic_match, eidetic_open_review,
+    encode_eidetic_message, EideticDataset, EideticMessage, EideticPurpose, EideticRole, EnrolledTemplate, MatchCandidate,
+    MatchResult, PolicyDecision, Review, ReviewOutcome, ReviewRequest, SearchRequest,
 };
 pub use field::{
     decode_field_message, encode_field_message, field_refine, field_verify_packet, mission_accept, mission_cancel,

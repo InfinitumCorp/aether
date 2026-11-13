@@ -36,12 +36,16 @@ data class StoredMessage(
     val drop: Boolean = false,
     /** Burner number id this conversation runs under, or null for the real identity. */
     val via: String? = null,
-    /** [KIND_POSITION] or [KIND_FIELD] when [body] is an encoded position report or field message. */
+    /**
+     * [KIND_POSITION], [KIND_FIELD] or [KIND_EIDETIC] when [body] is an encoded position report,
+     * field message or eidetic review message.
+     */
     val kind: String? = null,
 ) {
     companion object {
         const val KIND_POSITION = "pos"
         const val KIND_FIELD = "field"
+        const val KIND_EIDETIC = "eid"
     }
 }
 

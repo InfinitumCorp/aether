@@ -30,11 +30,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.aether_core.ChatMessage
+import uniffi.aether_core.EideticMessage
 import uniffi.aether_core.FieldMessage
 import uniffi.aether_core.PositionKind
 import uniffi.aether_core.PositionReport
+import uniffi.aether_core.decodeEideticMessage
 import uniffi.aether_core.decodeFieldMessage
 import uniffi.aether_core.decodePosition
+import uniffi.aether_core.encodeEideticMessage
 import uniffi.aether_core.encodeFieldMessage
 import uniffi.aether_core.encodePosition
 import uniffi.aether_core.Identity
@@ -177,13 +180,14 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         }
         _contacts.value = allContacts
         _messages.value = allMessages.sortedBy { it.sentAtMs }
-        // Rebuild the map picture and field inbox from received history.
+        // Rebuild the map picture and the field and eidetic inboxes from received history.
         for (msg in _messages.value) {
             if (msg.outgoing) continue
             val convo = msg.convo
             when (msg.kind) {
                 StoredMessage.KIND_POSITION -> runCatching { decodePosition(msg.body) }.onSuccess { notePosition(convo, it) }
                 StoredMessage.KIND_FIELD -> runCatching { decodeFieldMessage(msg.body) }.onSuccess { f -> _fieldInbox.update { it + (convo to f) } }
+                StoredMessage.KIND_EIDETIC -> runCatching { decodeEideticMessage(msg.body) }.onSuccess { e -> _eideticInbox.update { it + (convo to e) } }
             }
         }
         _burners.value = live
@@ -402,6 +406,10 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                         record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id, kind = StoredMessage.KIND_FIELD))
                         _fieldInbox.update { (it + (convo to f)).takeLast(500) }
                     }.onFailure { Log.w(TAG, "ignored malformed field message") }
+                    MessageKind.EIDETIC -> runCatching { decodeEideticMessage(msg.body) }.onSuccess { e ->
+                        record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id, kind = StoredMessage.KIND_EIDETIC))
+                        _eideticInbox.update { (it + (convo to e)).takeLast(500) }
+                    }.onFailure { Log.w(TAG, "ignored malformed eidetic message") }
                     else -> Unit
                 }
             }
@@ -425,6 +433,12 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     private val _fieldInbox = MutableStateFlow<List<Pair<String, FieldMessage>>>(emptyList())
     /** Field packets and mission updates received from teammates (convo → message), newest last. */
     val fieldInbox: StateFlow<List<Pair<String, FieldMessage>>> = _fieldInbox.asStateFlow()
+    private val _eideticInbox = MutableStateFlow<List<Pair<String, EideticMessage>>>(emptyList())
+    /**
+     * Eidetic MIL review requests and decisions received from teammates (convo → message), newest
+     * last. The core decoder has already refused anything carrying a template or vector.
+     */
+    val eideticInbox: StateFlow<List<Pair<String, EideticMessage>>> = _eideticInbox.asStateFlow()
 
     private fun notePosition(convo: String, r: PositionReport) {
         if (r.kind == PositionKind.OWN_FIX) _teamPositions.update { it + (convo to r) }
@@ -440,6 +454,11 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     suspend fun sendField(convo: String, message: FieldMessage): Result<Unit> = sendEncoded(
         convo, MessageKind.FIELD, StoredMessage.KIND_FIELD,
     ) { encodeFieldMessage(message) }
+
+    /** Sends an eidetic review request or decision to the peer of [convo], end-to-end encrypted. */
+    suspend fun sendEidetic(convo: String, message: EideticMessage): Result<Unit> = sendEncoded(
+        convo, MessageKind.EIDETIC, StoredMessage.KIND_EIDETIC,
+    ) { encodeEideticMessage(message) }
 
     private suspend fun sendEncoded(convo: String, kind: MessageKind, tag: String, encode: () -> String): Result<Unit> =
         withContext(Dispatchers.IO) {

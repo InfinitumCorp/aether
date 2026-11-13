@@ -40,7 +40,7 @@ fn field(s: &str, max: usize, what: &str) -> Result<String, AetherError> {
 
 /// Rejects details that look like a biometric template or embedded media: long runs of
 /// numbers (vectors), base64 blobs or data URIs. Templates belong in the sealed store only.
-fn looks_biometric(detail: &str) -> bool {
+pub(crate) fn looks_biometric(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     if lower.contains("data:image") || lower.contains("embedding") || lower.contains("template=") || lower.contains("vector=") {
         return true;

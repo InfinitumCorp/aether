@@ -324,6 +324,363 @@ pub fn eidetic_decide(
     })
 }
 
+// ---- Wire format: review requests and decisions between devices ---------------------------
+
+/// A search sent to another device for its mandatory second-person review. Carries the
+/// request, the match result (ids, names, scores, evidence, probe digest) and the pending
+/// review. Never the probe or any template.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ReviewRequest {
+    pub request: SearchRequest,
+    pub result: MatchResult,
+    /// The searcher's pending review for this search.
+    pub review: Review,
+}
+
+/// An eidetic message between ÆTHER devices (`MessageKind::Eidetic`): exactly one of a review
+/// request (searcher → reviewer) or a decided review (reviewer → searcher).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct EideticMessage {
+    pub request: Option<ReviewRequest>,
+    pub decision: Option<Review>,
+}
+
+const EIDETIC_MAGIC: &str = "AETHER-EIDETIC/1";
+/// Largest encoded eidetic message body.
+const MAX_EIDETIC_BODY: usize = 16 * 1024;
+const MAX_TEXT_CHARS: usize = 1024;
+
+fn e_esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\n', "\\n").replace('|', "\\p")
+}
+
+fn e_unesc(s: &str) -> Result<String, AetherError> {
+    let mut o = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('\\') => o.push('\\'),
+                Some('n') => o.push('\n'),
+                Some('p') => o.push('|'),
+                _ => return Err(bad("bad escape in eidetic message")),
+            }
+        } else {
+            o.push(c);
+        }
+    }
+    Ok(o)
+}
+
+fn role_code(r: EideticRole) -> &'static str {
+    match r {
+        EideticRole::Operator => "operator",
+        EideticRole::Reviewer => "reviewer",
+        EideticRole::Auditor => "auditor",
+        EideticRole::Enrollment => "enrollment",
+    }
+}
+
+fn purpose_code(p: EideticPurpose) -> &'static str {
+    match p {
+        EideticPurpose::CheckpointVerification => "checkpoint_verification",
+        EideticPurpose::AccessControl => "access_control",
+        EideticPurpose::PersonnelRecovery => "personnel_recovery",
+        EideticPurpose::CasualtyIdentification => "casualty_identification",
+    }
+}
+
+fn dataset_code(d: EideticDataset) -> &'static str {
+    match d {
+        EideticDataset::OwnForces => "own_forces",
+        EideticDataset::AccessList => "access_list",
+    }
+}
+
+fn outcome_code(o: ReviewOutcome) -> &'static str {
+    match o {
+        ReviewOutcome::Pending => "pending",
+        ReviewOutcome::Confirmed => "confirmed",
+        ReviewOutcome::Rejected => "rejected",
+        ReviewOutcome::Inconclusive => "inconclusive",
+    }
+}
+
+fn parse_role(s: &str) -> Result<EideticRole, AetherError> {
+    [EideticRole::Operator, EideticRole::Reviewer, EideticRole::Auditor, EideticRole::Enrollment]
+        .into_iter()
+        .find(|r| role_code(*r) == s)
+        .ok_or_else(|| bad("unknown role"))
+}
+
+fn parse_purpose(s: &str) -> Result<EideticPurpose, AetherError> {
+    [
+        EideticPurpose::CheckpointVerification,
+        EideticPurpose::AccessControl,
+        EideticPurpose::PersonnelRecovery,
+        EideticPurpose::CasualtyIdentification,
+    ]
+    .into_iter()
+    .find(|p| purpose_code(*p) == s)
+    .ok_or_else(|| bad("unknown purpose"))
+}
+
+fn parse_dataset(s: &str) -> Result<EideticDataset, AetherError> {
+    [EideticDataset::OwnForces, EideticDataset::AccessList]
+        .into_iter()
+        .find(|d| dataset_code(*d) == s)
+        .ok_or_else(|| bad("unknown dataset"))
+}
+
+fn parse_outcome(s: &str) -> Result<ReviewOutcome, AetherError> {
+    [ReviewOutcome::Pending, ReviewOutcome::Confirmed, ReviewOutcome::Rejected, ReviewOutcome::Inconclusive]
+        .into_iter()
+        .find(|o| outcome_code(*o) == s)
+        .ok_or_else(|| bad("unknown review outcome"))
+}
+
+fn parse_unit(s: &str, what: &str) -> Result<f32, AetherError> {
+    let v: f32 = s.parse().map_err(|_| bad(&format!("bad {what}")))?;
+    if !v.is_finite() || !(-1.0..=1.0).contains(&v) {
+        return Err(bad(&format!("{what} out of range")));
+    }
+    Ok(v)
+}
+
+/// Free text that may travel (authority, evidence, note): bounded, and never anything that
+/// looks like a template, vector or embedded media.
+fn check_text(s: &str, what: &str, allow_newlines: bool) -> Result<(), AetherError> {
+    if s.chars().count() > MAX_TEXT_CHARS || s.chars().any(|c| c.is_control() && !(allow_newlines && c == '\n')) {
+        return Err(bad(&format!("{what} must be at most {MAX_TEXT_CHARS} characters")));
+    }
+    if crate::audit::looks_biometric(s) {
+        return Err(bad("biometric data may not travel in an eidetic message"));
+    }
+    Ok(())
+}
+
+fn check_id(s: &str, what: &str) -> Result<(), AetherError> {
+    if clean_id(s, what)? != s {
+        return Err(bad(&format!("{what} has surrounding spaces")));
+    }
+    if crate::audit::looks_biometric(s) {
+        return Err(bad("biometric data may not travel in an eidetic message"));
+    }
+    Ok(())
+}
+
+fn check_digest(s: &str) -> Result<(), AetherError> {
+    if s.len() != 16 || !s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)) {
+        return Err(bad("probe digest must be 16 lowercase hex characters"));
+    }
+    Ok(())
+}
+
+/// Everything a review request must satisfy, on both send and receive.
+fn check_request(r: &ReviewRequest) -> Result<(), AetherError> {
+    let q = &r.request;
+    check_id(&q.search_id, "search id")?;
+    check_id(&q.searcher, "searcher")?;
+    check_text(&q.legal_authority, "legal authority", false)?;
+    if !eidetic_authorize(q.clone())?.allowed {
+        return Err(AetherError::state("only an authorized search can be sent for review"));
+    }
+    let m = &r.result;
+    if m.search_id != q.search_id || r.review.search_id != q.search_id {
+        return Err(AetherError::state("request, result and review belong to different searches"));
+    }
+    if m.candidates.len() > 3 {
+        return Err(bad("at most 3 candidates"));
+    }
+    let mut last = f32::INFINITY;
+    for c in &m.candidates {
+        check_id(&c.subject_id, "subject id")?;
+        check_id(&c.display_name, "display name")?;
+        if !c.score.is_finite() || c.score < MIN_REPORTED_SCORE || c.score > 1.0 || c.score > last {
+            return Err(bad("candidate scores must be reportable, at most 1 and best first"));
+        }
+        last = c.score;
+    }
+    for (v, what) in [(m.confidence, "confidence"), (m.margin, "margin")] {
+        if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+            return Err(bad(&format!("{what} out of range")));
+        }
+    }
+    check_text(&m.evidence, "evidence", false)?;
+    check_digest(&m.probe_digest)?;
+    let rv = &r.review;
+    if rv.outcome != ReviewOutcome::Pending
+        || rv.reviewer.is_some()
+        || rv.decided_at_ms.is_some()
+        || rv.confirmed_subject.is_some()
+        || !rv.note.is_empty()
+    {
+        return Err(AetherError::state("a review request carries a pending, undecided review"));
+    }
+    if rv.searcher != q.searcher {
+        return Err(AetherError::state("review searcher does not match the search"));
+    }
+    Ok(())
+}
+
+/// Everything a returned decision must satisfy, on both send and receive.
+fn check_decision(r: &Review) -> Result<(), AetherError> {
+    check_id(&r.search_id, "search id")?;
+    check_id(&r.searcher, "searcher")?;
+    let reviewer = r.reviewer.as_deref().ok_or_else(|| bad("a decision names its reviewer"))?;
+    check_id(reviewer, "reviewer")?;
+    if reviewer.eq_ignore_ascii_case(&r.searcher) {
+        return Err(AetherError::state("the person who ran a search cannot review it"));
+    }
+    if r.decided_at_ms.is_none() {
+        return Err(bad("a decision carries its time"));
+    }
+    match (r.outcome, &r.confirmed_subject) {
+        (ReviewOutcome::Pending, _) => return Err(bad("a decision cannot be pending")),
+        (ReviewOutcome::Confirmed, Some(s)) => check_id(s, "confirmed subject")?,
+        (ReviewOutcome::Confirmed, None) => return Err(bad("a confirmation must name the person confirmed")),
+        (_, Some(_)) => return Err(bad("only a confirmation names a person")),
+        _ => {}
+    }
+    check_text(&r.note, "note", true)
+}
+
+fn review_fields(r: &Review) -> Vec<String> {
+    vec![
+        r.search_id.clone(),
+        r.searcher.clone(),
+        outcome_code(r.outcome).to_owned(),
+        r.reviewer.clone().unwrap_or_default(),
+        r.decided_at_ms.map(|t| t.to_string()).unwrap_or_default(),
+        r.confirmed_subject.clone().unwrap_or_default(),
+        r.note.clone(),
+    ]
+}
+
+fn wire_line(tag: &str, fields: &[String]) -> String {
+    std::iter::once(tag.to_owned()).chain(fields.iter().map(|f| e_esc(f))).collect::<Vec<_>>().join("|")
+}
+
+/// Encodes an eidetic message body:
+///
+/// ```text
+/// AETHER-EIDETIC/1
+/// request|search_id|searcher|role|purpose|dataset|legal_authority
+/// result|confidence|margin|evidence|probe_digest
+/// candidate|subject_id|display_name|score        (0-3 lines, best first)
+/// review|search_id|searcher|pending||||
+/// ```
+/// or, for a decision, the magic line and one
+/// `decision|search_id|searcher|outcome|reviewer|decided_at_ms|confirmed_subject|note` line.
+/// Fields are escaped (`\\`, `\n`, `\p` for `|`). The message is checked before encoding.
+#[uniffi::export]
+pub fn encode_eidetic_message(message: EideticMessage) -> Result<String, AetherError> {
+    let mut lines = vec![EIDETIC_MAGIC.to_owned()];
+    match (&message.request, &message.decision) {
+        (Some(r), None) => {
+            check_request(r)?;
+            let q = &r.request;
+            lines.push(wire_line(
+                "request",
+                &[
+                    q.search_id.clone(),
+                    q.searcher.clone(),
+                    role_code(q.role).into(),
+                    purpose_code(q.purpose).into(),
+                    dataset_code(q.dataset).into(),
+                    q.legal_authority.clone(),
+                ],
+            ));
+            let m = &r.result;
+            lines.push(wire_line("result", &[m.confidence.to_string(), m.margin.to_string(), m.evidence.clone(), m.probe_digest.clone()]));
+            for c in &m.candidates {
+                lines.push(wire_line("candidate", &[c.subject_id.clone(), c.display_name.clone(), c.score.to_string()]));
+            }
+            lines.push(wire_line("review", &review_fields(&r.review)));
+        }
+        (None, Some(d)) => {
+            check_decision(d)?;
+            lines.push(wire_line("decision", &review_fields(d)));
+        }
+        _ => return Err(bad("an eidetic message carries exactly one review request or decision")),
+    }
+    let body = lines.join("\n");
+    if body.len() > MAX_EIDETIC_BODY {
+        return Err(bad("eidetic message too large"));
+    }
+    Ok(body)
+}
+
+fn parse_review(f: &[String]) -> Result<Review, AetherError> {
+    let opt = |s: &String| (!s.is_empty()).then(|| s.clone());
+    Ok(Review {
+        search_id: f[0].clone(),
+        searcher: f[1].clone(),
+        outcome: parse_outcome(&f[2])?,
+        reviewer: opt(&f[3]),
+        decided_at_ms: if f[4].is_empty() { None } else { Some(f[4].parse().map_err(|_| bad("bad decision time"))?) },
+        confirmed_subject: opt(&f[5]),
+        note: f[6].clone(),
+    })
+}
+
+/// Decodes and checks an eidetic message body. Strict: exact line layout and field counts,
+/// known codes only, and anything that looks like a template, vector or media is refused.
+#[uniffi::export]
+pub fn decode_eidetic_message(body: String) -> Result<EideticMessage, AetherError> {
+    if body.len() > MAX_EIDETIC_BODY {
+        return Err(bad("eidetic message too large"));
+    }
+    let mut lines = body.split('\n');
+    if lines.next() != Some(EIDETIC_MAGIC) {
+        return Err(bad("not an eidetic message"));
+    }
+    let rows: Vec<Vec<String>> =
+        lines.map(|l| l.split('|').map(e_unesc).collect::<Result<Vec<_>, _>>()).collect::<Result<_, _>>()?;
+    let tag = |i: usize| rows.get(i).and_then(|r| r.first()).map(String::as_str);
+    match tag(0) {
+        Some("decision") if rows.len() == 1 && rows[0].len() == 8 => {
+            let d = parse_review(&rows[0][1..])?;
+            check_decision(&d)?;
+            Ok(EideticMessage { request: None, decision: Some(d) })
+        }
+        Some("request") if (3..=6).contains(&rows.len()) => {
+            let last = rows.len() - 1;
+            let (q, res, rv) = (&rows[0], &rows[1], &rows[last]);
+            if q.len() != 7 || tag(1) != Some("result") || res.len() != 5 || tag(last) != Some("review") || rv.len() != 8 {
+                return Err(bad("not an eidetic message"));
+            }
+            let request = SearchRequest {
+                search_id: q[1].clone(),
+                searcher: q[2].clone(),
+                role: parse_role(&q[3])?,
+                purpose: parse_purpose(&q[4])?,
+                dataset: parse_dataset(&q[5])?,
+                legal_authority: q[6].clone(),
+            };
+            let mut candidates = Vec::new();
+            for c in &rows[2..last] {
+                if c.len() != 4 || c[0] != "candidate" {
+                    return Err(bad("not an eidetic message"));
+                }
+                candidates.push(MatchCandidate { subject_id: c[1].clone(), display_name: c[2].clone(), score: parse_unit(&c[3], "score")? });
+            }
+            let result = MatchResult {
+                search_id: request.search_id.clone(),
+                candidates,
+                confidence: parse_unit(&res[1], "confidence")?,
+                margin: parse_unit(&res[2], "margin")?,
+                evidence: res[3].clone(),
+                probe_digest: res[4].clone(),
+            };
+            let r = ReviewRequest { request, result, review: parse_review(&rv[1..])? };
+            check_request(&r)?;
+            Ok(EideticMessage { request: Some(r), decision: None })
+        }
+        _ => Err(bad("not an eidetic message")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +766,107 @@ mod tests {
         let done = decide("REV-1", EideticRole::Reviewer, ReviewOutcome::Confirmed, Some("P-2")).unwrap();
         assert_eq!((done.outcome, done.confirmed_subject.as_deref()), (ReviewOutcome::Confirmed, Some("P-2")));
         assert!(eidetic_decide(done, result, "REV-2".into(), EideticRole::Reviewer, ReviewOutcome::Rejected, None, "".into(), 6).is_err());
+    }
+
+    fn review_request() -> ReviewRequest {
+        let request = SearchRequest {
+            legal_authority: "Gate | order \\ 7".into(),
+            ..req(EideticPurpose::CheckpointVerification, EideticDataset::AccessList)
+        };
+        let result = eidetic_match(request.clone(), vec_for(2), roster()).unwrap();
+        let review = eidetic_open_review("S-1".into(), "OP-ALPHA".into()).unwrap();
+        ReviewRequest { request, result, review }
+    }
+
+    #[test]
+    fn eidetic_wire_round_trip() {
+        let rr = review_request();
+        assert!(!rr.result.candidates.is_empty());
+        let msg = EideticMessage { request: Some(rr.clone()), decision: None };
+        let body = encode_eidetic_message(msg.clone()).unwrap();
+        assert!(body.starts_with("AETHER-EIDETIC/1\nrequest|S-1|OP-ALPHA|operator|checkpoint_verification|access_list|"));
+        assert_eq!(decode_eidetic_message(body).unwrap(), msg);
+
+        let decided = eidetic_decide(
+            rr.review.clone(),
+            rr.result.clone(),
+            "REV-1".into(),
+            EideticRole::Reviewer,
+            ReviewOutcome::Confirmed,
+            Some(rr.result.candidates[0].subject_id.clone()),
+            "Checked ID card.\nLine | two".into(),
+            77,
+        )
+        .unwrap();
+        let msg = EideticMessage { request: None, decision: Some(decided.clone()) };
+        let body = encode_eidetic_message(msg.clone()).unwrap();
+        assert!(body.starts_with("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|confirmed|REV-1|77|"));
+        assert_eq!(decode_eidetic_message(body).unwrap(), msg);
+        let rejected = Review { outcome: ReviewOutcome::Rejected, confirmed_subject: None, ..decided };
+        let m = EideticMessage { request: None, decision: Some(rejected) };
+        assert_eq!(decode_eidetic_message(encode_eidetic_message(m.clone()).unwrap()).unwrap(), m);
+    }
+
+    #[test]
+    fn eidetic_wire_is_strict() {
+        let rr = review_request();
+        assert!(encode_eidetic_message(EideticMessage { request: None, decision: None }).is_err());
+        let decided = eidetic_decide(rr.review.clone(), rr.result.clone(), "REV-1".into(), EideticRole::Reviewer, ReviewOutcome::Rejected, None, "".into(), 5).unwrap();
+        assert!(encode_eidetic_message(EideticMessage { request: Some(rr.clone()), decision: Some(decided.clone()) }).is_err());
+        // The searcher cannot appear as the reviewer, and a decision cannot be pending.
+        let selfie = Review { reviewer: Some("op-alpha".into()), ..decided.clone() };
+        assert!(encode_eidetic_message(EideticMessage { request: None, decision: Some(selfie) }).is_err());
+        assert!(decode_eidetic_message("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|confirmed|OP-ALPHA|5|P-2|".into()).is_err());
+        assert!(decode_eidetic_message("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|pending|REV-1|5||".into()).is_err());
+        assert!(decode_eidetic_message("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|rejected|REV-1|5|P-2|".into()).is_err());
+        assert!(decode_eidetic_message("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|confirmed|REV-1|5||".into()).is_err());
+        assert!(decode_eidetic_message("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|rejected|REV-1|||".into()).is_err());
+        // Wrong magic, extra fields, extra lines, unknown codes.
+        let ok = encode_eidetic_message(EideticMessage { request: None, decision: Some(decided) }).unwrap();
+        assert!(decode_eidetic_message(ok.clone()).is_ok());
+        assert!(decode_eidetic_message(ok.replace("AETHER-EIDETIC/1", "AETHER-EIDETIC/2")).is_err());
+        assert!(decode_eidetic_message(format!("{ok}|x")).is_err());
+        assert!(decode_eidetic_message(format!("{ok}\n")).is_err());
+        assert!(decode_eidetic_message(ok.replace("rejected", "approved")).is_err());
+        let req_body = encode_eidetic_message(EideticMessage { request: Some(rr.clone()), decision: None }).unwrap();
+        assert!(decode_eidetic_message(req_body.replace("|operator|", "|reviewer|")).is_err(), "unauthorized search accepted");
+        assert!(decode_eidetic_message(req_body.replace("review|S-1|OP-ALPHA|pending", "review|S-1|OP-ALPHA|confirmed")).is_err());
+        assert!(decode_eidetic_message(req_body.replace("review|S-1|", "review|S-2|")).is_err());
+        assert!(decode_eidetic_message(req_body.replace("\nresult|", "\nresults|")).is_err());
+        // A pending review that is already decided, a result for another search or a bad digest is not sent.
+        let mut bad_rr = rr.clone();
+        bad_rr.review.reviewer = Some("REV-1".into());
+        assert!(encode_eidetic_message(EideticMessage { request: Some(bad_rr), decision: None }).is_err());
+        let mut bad_rr = rr.clone();
+        bad_rr.result.search_id = "S-9".into();
+        assert!(encode_eidetic_message(EideticMessage { request: Some(bad_rr), decision: None }).is_err());
+        let mut bad_rr = rr;
+        bad_rr.result.probe_digest = "not-a-digest".into();
+        assert!(encode_eidetic_message(EideticMessage { request: Some(bad_rr), decision: None }).is_err());
+    }
+
+    #[test]
+    fn eidetic_wire_refuses_biometric_payloads() {
+        let rr = review_request();
+        let vector = (0..128).map(|i| format!("0.{i}")).collect::<Vec<_>>().join(",");
+        let mut smuggled = rr.clone();
+        smuggled.result.evidence = vector.clone();
+        assert!(encode_eidetic_message(EideticMessage { request: Some(smuggled), decision: None }).is_err());
+        let mut smuggled = rr.clone();
+        smuggled.request.legal_authority = "order 7 template=abc".into();
+        assert!(encode_eidetic_message(EideticMessage { request: Some(smuggled), decision: None }).is_err());
+        let body = encode_eidetic_message(EideticMessage { request: Some(rr.clone()), decision: None }).unwrap();
+        let ev = e_esc(&rr.result.evidence);
+        assert!(body.contains(&ev));
+        assert!(decode_eidetic_message(body.replace(&ev, &vector)).is_err());
+        assert!(decode_eidetic_message(body.replace(&ev, "data:image/png;base64,AAAA")).is_err());
+        // An extra row (e.g. a smuggled vector line) is refused.
+        let extra = body.replacen("\nreview|", &format!("\nvector|{vector}\nreview|"), 1);
+        assert!(decode_eidetic_message(extra).is_err());
+        let decided = eidetic_decide(rr.review, rr.result, "REV-1".into(), EideticRole::Reviewer, ReviewOutcome::Inconclusive, None, "".into(), 5).unwrap();
+        let note = Review { note: format!("embedding {vector}"), ..decided };
+        assert!(encode_eidetic_message(EideticMessage { request: None, decision: Some(note) }).is_err());
+        assert!(decode_eidetic_message(format!("AETHER-EIDETIC/1\ndecision|S-1|OP-ALPHA|rejected|REV-1|5||{vector}")).is_err());
+        assert!(decode_eidetic_message("x".repeat(MAX_EIDETIC_BODY + 1)).is_err());
     }
 }

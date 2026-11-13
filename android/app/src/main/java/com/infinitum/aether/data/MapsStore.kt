@@ -85,8 +85,14 @@ class MapsStore(private val context: Context, private val vault: Vault) {
         val tracks = LinkedHashMap<String, MapTrack>()
         val routes = LinkedHashMap<String, MapRoute>()
         val packs = LinkedHashMap<String, MapPack>()
+        // Tracks with points but no final ("trkfull") record: recording was cut off (process killed).
+        val unfinished = LinkedHashSet<String>()
         for (raw in vault.readAll()) {
             val o = runCatching { JSONObject(raw.decodeToString()) }.getOrNull() ?: continue
+            when (o.optString("t")) {
+                "trk", "seg" -> unfinished += o.getString("id")
+                "trkfull", "del" -> unfinished -= o.getString("id")
+            }
             when (o.optString("t")) {
                 "wpt" -> wpts[o.getString("id")] = MapWaypoint(o.getString("id"), wptFrom(o))
                 "trk" -> tracks[o.getString("id")] = MapTrack(o.getString("id"), o.getString("n"), o.optLong("at"), listOf(emptyList()))
@@ -113,6 +119,15 @@ class MapsStore(private val context: Context, private val vault: Vault) {
                 "fmt" -> _format.value = runCatching { CoordFormat.valueOf(o.getString("f")) }.getOrDefault(CoordFormat.MGRS)
                 "del" -> o.getString("id").let { wpts.remove(it); tracks.remove(it); routes.remove(it); packs.remove(it) }
             }
+        }
+        // Close interrupted recordings the way stopTrack would, so they're simplified and stored whole.
+        for (id in unfinished) {
+            val t = tracks[id] ?: continue
+            val done = t.copy(segments = t.segments.filter { it.isNotEmpty() }.map { seg ->
+                runCatching { simplifyTrack(seg, 2.0) }.getOrDefault(seg)
+            })
+            put(trackFullJson(done))
+            tracks[id] = done
         }
         _waypoints.value = wpts.values.toList()
         _tracks.value = tracks.values.toList()
@@ -235,6 +250,9 @@ class MapsStore(private val context: Context, private val vault: Vault) {
                 runCatching {
                     db.rawQuery("SELECT name, value FROM metadata", null).use { c -> while (c.moveToNext()) meta[c.getString(0)] = c.getString(1) }
                 }
+                if (meta["format"]?.lowercase() == "pbf") {
+                    throw UnsupportedPackException("This is a vector map pack (pbf). ÆTHER Maps shows raster packs (PNG, JPEG or WebP) only.")
+                }
                 val (minZ, maxZ) = db.rawQuery("SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles", null).use { c ->
                     require(c.moveToFirst() && !c.isNull(0)) { "The pack has no tiles" }
                     c.getInt(0) to c.getInt(1)
@@ -247,11 +265,16 @@ class MapsStore(private val context: Context, private val vault: Vault) {
                 usePack(id)
                 return pack
             }
+        } catch (e: UnsupportedPackException) {
+            dest.delete()
+            throw e
         } catch (e: Exception) {
             dest.delete()
             throw IllegalArgumentException("Not a usable MBTiles map pack: ${e.message}", e)
         }
     }
+
+    class UnsupportedPackException(message: String) : IllegalArgumentException(message)
 
     fun usePack(id: String?) {
         put(JSONObject().put("t", "use").put("id", id ?: ""))

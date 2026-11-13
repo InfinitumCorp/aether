@@ -47,6 +47,7 @@ import com.infinitum.aether.data.SearchRecord
 import com.infinitum.aether.data.TemplateFile
 import com.infinitum.aether.data.eideticMessage
 import com.infinitum.aether.net.AetherNode
+import com.infinitum.aether.net.LinkState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -115,6 +116,11 @@ internal fun EideticScreen(node: AetherNode, eidetic: EideticStore) {
     LaunchedEffect(displayName) { eidetic.setOperator(displayName) }
     val loaded by eidetic.loaded.collectAsState()
     val loadError by eidetic.loadError.collectAsState()
+    val inbox by node.eideticInbox.collectAsState()
+    val contacts by node.contacts.collectAsState()
+    LaunchedEffect(eidetic, inbox, contacts, displayName) {
+        if (inbox.isNotEmpty()) eidetic.mergeInbox(inbox, contacts.mapValues { it.value.name }, displayName)
+    }
     var page by remember { mutableStateOf<EPage>(EPage.Desk) }
     BackHandler(enabled = page != EPage.Desk) {
         page = when (page) {
@@ -129,9 +135,9 @@ internal fun EideticScreen(node: AetherNode, eidetic: EideticStore) {
             EPage.Desk -> DeskPage(eidetic) { page = it }
             EPage.Enroll -> EnrollPage(eidetic) { page = EPage.Desk }
             EPage.Search -> SearchPage(eidetic, onBack = { page = EPage.Desk }, onResult = { page = EPage.Result(it) })
-            is EPage.Result -> ResultPage(eidetic, p.searchId) { page = EPage.Desk }
+            is EPage.Result -> ResultPage(node, eidetic, p.searchId) { page = EPage.Desk }
             EPage.Reviews -> ReviewsPage(eidetic, onBack = { page = EPage.Desk }, onOpen = { page = EPage.ReviewDetail(it) })
-            is EPage.ReviewDetail -> ReviewDetailPage(eidetic, p.searchId) { page = EPage.Reviews }
+            is EPage.ReviewDetail -> ReviewDetailPage(node, eidetic, p.searchId) { page = EPage.Reviews }
             EPage.Audit -> AuditPage(eidetic) { page = EPage.Desk }
         }
     }
@@ -288,6 +294,41 @@ private fun TemplatePicker(tag: String, label: String, template: LoadedTemplate?
     }
 }
 
+/** Online contacts as (convo, name), the same way ÆTHER Field™ picks teammates. */
+@Composable
+private fun eOnlineContacts(node: AetherNode): List<Pair<String, String>> {
+    val states by node.linkStates.collectAsState()
+    val contacts by node.contacts.collectAsState()
+    return remember(states, contacts) {
+        val live = node.onlineConvos().toSet() + states.filterValues { it == LinkState.ONLINE }.keys
+        live.mapNotNull { c -> contacts[c]?.let { c to it.name } }.sortedBy { it.second }
+    }
+}
+
+@Composable
+private fun ESendToDialog(node: AetherNode, title: String, exclude: String, onDismiss: () -> Unit, onPick: (String, String) -> Unit) {
+    val online = eOnlineContacts(node).filterNot { it.second.equals(exclude, ignoreCase = true) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Paper,
+        title = { Text(title, style = MaterialTheme.typography.titleMedium, color = Ink) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Hint("Send only to a trained reviewer. The request carries the search, scores, evidence and probe digest, never the probe or any template.")
+                Spacer(Modifier.height(8.dp))
+                if (online.isEmpty()) Hint("No teammate is online. Connect in Talk first.")
+                for ((convo, name) in online) {
+                    ListRow(tag = "eidetic_send_to_$name", online = true, title = name, subtitle = "Online", trailing = "Send ↗") { onPick(convo, name) }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss, modifier = Modifier.testTag("eidetic_send_to_close")) { Text("Close", color = Accent) }
+        },
+    )
+}
+
 // ---- Desk -----------------------------------------------------------------------------
 
 @Composable
@@ -302,6 +343,7 @@ private fun DeskPage(eidetic: EideticStore, open: (EPage) -> Unit) {
     var message by remember { mutableStateOf<String?>(null) }
     val pending = reviews.values.count { it.outcome == ReviewOutcome.PENDING }
     val reviewable = reviews.values.count { it.outcome == ReviewOutcome.PENDING && !it.searcher.equals(operator, ignoreCase = true) }
+    val ownSearches = searches.filter { it.from == null }
 
     EPageFrame("eidetic_desk", "Identity verification / Force protection", EIDETIC, onBack = null) {
         Spacer(Modifier.height(12.dp))
@@ -336,7 +378,8 @@ private fun DeskPage(eidetic: EideticStore, open: (EPage) -> Unit) {
         Section(2, "Status")
         SpecRow("Own forces enrolled", roster.count { it.dataset == EideticDataset.OWN_FORCES }.toString())
         SpecRow("Access list enrolled", roster.count { it.dataset == EideticDataset.ACCESS_LIST }.toString())
-        SpecRow("Searches recorded", searches.size.toString())
+        SpecRow("Searches recorded", ownSearches.size.toString())
+        SpecRow("Received for review", (searches.size - ownSearches.size).toString())
         SpecRow("Pending reviews", pending.toString())
         SpecRow("Audit chain", if (audit.verified) "Verified · ${audit.entries.size} entries" else "BROKEN")
 
@@ -346,10 +389,10 @@ private fun DeskPage(eidetic: EideticStore, open: (EPage) -> Unit) {
             null -> Hint("Choose this device's role to begin.")
             EideticRole.OPERATOR -> {
                 PrimaryButton("Run a search", enabled = true, tag = "eidetic_open_search", modifier = Modifier.fillMaxWidth()) { open(EPage.Search) }
-                if (searches.isNotEmpty()) {
+                if (ownSearches.isNotEmpty()) {
                     Spacer(Modifier.height(20.dp))
                     Kicker("Recent searches")
-                    for (s in searches.take(20)) {
+                    for (s in ownSearches.take(20)) {
                         val outcome = reviews[s.request.searchId]?.outcome
                         ListRow(
                             tag = "eidetic_search_${s.request.searchId}",
@@ -554,6 +597,7 @@ private fun ResultBody(s: SearchRecord, review: Review?) {
     Section(1, "Search")
     SpecRow("Search id", s.request.searchId)
     SpecRow("Run by", s.request.searcher)
+    s.from?.let { SpecRow("Sent for review by", s.fromName ?: it.takeLast(12)) }
     SpecRow("Time", eStamp(s.atMs))
     SpecRow("Purpose", purposeLabel(s.request.purpose))
     SpecRow("Roster", datasetLabel(s.request.dataset))
@@ -593,17 +637,48 @@ private fun ResultBody(s: SearchRecord, review: Review?) {
 }
 
 @Composable
-private fun ResultPage(eidetic: EideticStore, searchId: String, onBack: () -> Unit) {
+private fun ResultPage(node: AetherNode, eidetic: EideticStore, searchId: String, onBack: () -> Unit) {
     val searches by eidetic.searches.collectAsState()
     val reviews by eidetic.reviews.collectAsState()
+    val sentTo by eidetic.sentTo.collectAsState()
     val s = searches.firstOrNull { it.request.searchId == searchId }
+    val scope = rememberCoroutineScope()
+    var picking by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
     EPageFrame("eidetic_result", "Search result", searchId, onBack) {
         if (s == null) {
             Hint("This search is not on record.")
         } else {
             ResultBody(s, reviews[searchId])
-            if (reviews[searchId]?.outcome == ReviewOutcome.PENDING) {
-                Hint("A review is open for this search. A reviewer other than you must decide it.")
+            if (reviews[searchId]?.outcome == ReviewOutcome.PENDING && s.result != null && s.from == null) {
+                Hint("A review is open for this search. A reviewer other than you must decide it: send it to a reviewer's device.")
+                val to = sentTo[searchId].orEmpty()
+                if (to.isNotEmpty()) SpecRow("Sent for review to", to.joinToString(", ") { it.second })
+                Spacer(Modifier.height(12.dp))
+                PrimaryButton(
+                    if (busy) "Sending…" else "Send for review to…",
+                    enabled = !busy,
+                    tag = "eidetic_send_for_review",
+                    modifier = Modifier.fillMaxWidth(),
+                ) { picking = true }
+                EMessage(notice, tag = "eidetic_send_notice", error = false)
+                EMessage(message, tag = "eidetic_send_message")
+            }
+        }
+    }
+    if (picking && s != null) {
+        ESendToDialog(node, "Send $searchId for review", exclude = s.request.searcher, onDismiss = { picking = false }) { convo, name ->
+            picking = false
+            busy = true
+            message = null
+            notice = null
+            scope.launch {
+                eidetic.sendForReview(searchId, convo, name, node::sendEidetic)
+                    .onSuccess { notice = "Sent to $name for review. Their decision will appear here." }
+                    .onFailure { message = "Not sent to $name: ${eideticMessage(it)}" }
+                busy = false
             }
         }
     }
@@ -636,7 +711,12 @@ private fun ReviewsPage(eidetic: EideticStore, onBack: () -> Unit, onOpen: (Stri
                 tag = "eidetic_review_${r.searchId}",
                 online = true,
                 title = r.searchId,
-                subtitle = listOfNotNull(s?.let { purposeLabel(it.request.purpose) }, "run by ${r.searcher}", s?.let { eStamp(it.atMs) }).joinToString(" · "),
+                subtitle = listOfNotNull(
+                    s?.let { purposeLabel(it.request.purpose) },
+                    "run by ${r.searcher}",
+                    s?.from?.let { f -> "from ${s.fromName ?: f.takeLast(12)}" },
+                    s?.let { eStamp(it.atMs) },
+                ).joinToString(" · "),
                 trailing = s?.result?.let { "conf ${eF2(it.confidence)}" } ?: "Pending",
                 titleMono = true,
             ) { onOpen(r.searchId) }
@@ -660,11 +740,14 @@ private fun ReviewsPage(eidetic: EideticStore, onBack: () -> Unit, onOpen: (Stri
 }
 
 @Composable
-private fun ReviewDetailPage(eidetic: EideticStore, searchId: String, onBack: () -> Unit) {
+private fun ReviewDetailPage(node: AetherNode, eidetic: EideticStore, searchId: String, onBack: () -> Unit) {
     val role by eidetic.role.collectAsState()
     val operator by eidetic.operator.collectAsState()
     val reviews by eidetic.reviews.collectAsState()
     val searches by eidetic.searches.collectAsState()
+    val decisionSent by eidetic.decisionSent.collectAsState()
+    var returning by remember { mutableStateOf(false) }
+    var returnNote by remember { mutableStateOf<String?>(null) }
     val s = searches.firstOrNull { it.request.searchId == searchId }
     val review = reviews[searchId]
     val scope = rememberCoroutineScope()
@@ -680,6 +763,31 @@ private fun ReviewDetailPage(eidetic: EideticStore, searchId: String, onBack: ()
             return@EPageFrame
         }
         ResultBody(s, review)
+        val from = s.from
+        if (from != null && review.outcome != ReviewOutcome.PENDING) {
+            val who = s.fromName ?: from.takeLast(12)
+            if (searchId in decisionSent) {
+                Hint("Decision sent back to $who.")
+            } else {
+                Hint("The decision has not reached $who yet.")
+                TextButton(
+                    onClick = {
+                        returning = true
+                        scope.launch {
+                            returnNote = eidetic.returnDecision(searchId, node::sendEidetic).fold(
+                                { "Decision sent back to $who." },
+                                { "Not sent to $who: ${eideticMessage(it)}" },
+                            )
+                            returning = false
+                        }
+                    },
+                    enabled = !returning,
+                    contentPadding = PaddingValues(0.dp),
+                    modifier = Modifier.testTag("eidetic_return_decision"),
+                ) { Text(if (returning) "Sending…" else "Send decision back to $who", color = Accent) }
+            }
+            EMessage(returnNote, tag = "eidetic_return_message", error = false)
+        }
         val ownSearch = review.searcher.equals(operator, ignoreCase = true)
         val canDecide = role == EideticRole.REVIEWER && review.outcome == ReviewOutcome.PENDING && !ownSearch && s.result != null
         if (review.outcome == ReviewOutcome.PENDING && ownSearch) {
@@ -713,6 +821,13 @@ private fun ReviewDetailPage(eidetic: EideticStore, searchId: String, onBack: ()
             scope.launch {
                 try {
                     eidetic.decide(searchId, o, subject, note)
+                    if (s.from != null) {
+                        val who = s.fromName ?: s.from.takeLast(12)
+                        returnNote = eidetic.returnDecision(searchId, node::sendEidetic).fold(
+                            { "Decision recorded and sent back to $who." },
+                            { "Decision recorded. Not yet sent to $who: ${eideticMessage(it)}" },
+                        )
+                    }
                 } catch (e: Exception) {
                     message = eideticMessage(e)
                 } finally {

@@ -22,6 +22,8 @@ pub enum MessageKind {
     Position,
     /// A field report or tasking update; `body` is an encoded [`crate::FieldMessage`].
     Field,
+    /// An eidetic MIL review request or decision; `body` is an encoded [`crate::EideticMessage`].
+    Eidetic,
 }
 
 impl MessageKind {
@@ -34,6 +36,7 @@ impl MessageKind {
             Self::Burn => 5,
             Self::Position => 6,
             Self::Field => 7,
+            Self::Eidetic => 8,
         }
     }
     fn from_byte(b: u8) -> Option<Self> {
@@ -45,6 +48,7 @@ impl MessageKind {
             5 => Self::Burn,
             6 => Self::Position,
             7 => Self::Field,
+            8 => Self::Eidetic,
             _ => return None,
         })
     }

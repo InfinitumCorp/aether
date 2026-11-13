@@ -750,6 +750,12 @@ private fun chatBodyText(m: StoredMessage): String = when (m.kind) {
             ?: f.mission?.let { "Field mission ${it.id} · ${it.title} · ${it.state.name.lowercase()}" }
             ?: "Field message"
     }.getOrDefault("Field message (unreadable)")
+    StoredMessage.KIND_EIDETIC -> runCatching {
+        val e = uniffi.aether_core.decodeEideticMessage(m.body)
+        e.request?.let { "eidetic review request ${it.request.searchId}" }
+            ?: e.decision?.let { "eidetic review ${it.searchId}: ${it.outcome.name.lowercase()}" }
+            ?: "eidetic message"
+    }.getOrDefault("eidetic message (unreadable)")
     else -> m.body
 }
 

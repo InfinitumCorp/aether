@@ -6,6 +6,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -16,6 +17,7 @@ import org.json.JSONObject
 import uniffi.aether_core.AetherException
 import uniffi.aether_core.AuditEntry
 import uniffi.aether_core.EideticDataset
+import uniffi.aether_core.EideticMessage
 import uniffi.aether_core.EideticPurpose
 import uniffi.aether_core.EideticRole
 import uniffi.aether_core.EnrolledTemplate
@@ -23,6 +25,7 @@ import uniffi.aether_core.MatchCandidate
 import uniffi.aether_core.MatchResult
 import uniffi.aether_core.PolicyDecision
 import uniffi.aether_core.Review
+import uniffi.aether_core.ReviewRequest
 import uniffi.aether_core.ReviewOutcome
 import uniffi.aether_core.SearchRequest
 import uniffi.aether_core.Vault
@@ -33,8 +36,10 @@ import uniffi.aether_core.eideticCheckEnrollment
 import uniffi.aether_core.eideticDecide
 import uniffi.aether_core.eideticMatch
 import uniffi.aether_core.eideticOpenReview
+import uniffi.aether_core.encodeEideticMessage
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -57,6 +62,10 @@ data class SearchRecord(
     val result: MatchResult?,
     /** Set when the search was authorized but the matcher refused it (e.g. template size mismatch). */
     val error: String?,
+    /** Conversation of the device that sent this search here for review; null for a search run on this device. */
+    val from: String? = null,
+    /** Contact name of [from] when the request arrived. */
+    val fromName: String? = null,
 )
 
 /** The audit chain and whether it verified. [headHex] is the head hash when [verified]. */
@@ -162,6 +171,17 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
     private val _audit = MutableStateFlow(AuditState())
     val audit: StateFlow<AuditState> = _audit.asStateFlow()
 
+    private val _sentTo = MutableStateFlow<Map<String, List<Pair<String, String>>>>(emptyMap())
+    /** Search id → contacts (convo, name) its review request was delivered to. */
+    val sentTo: StateFlow<Map<String, List<Pair<String, String>>>> = _sentTo.asStateFlow()
+
+    private val _decisionSent = MutableStateFlow<Set<String>>(emptySet())
+    /** Search ids (of searches received for review) whose decision was delivered back. */
+    val decisionSent: StateFlow<Set<String>> = _decisionSent.asStateFlow()
+
+    /** Eidetic inbox items already handled (sha-256 of conversation and body). */
+    private val seen = HashSet<String>()
+
     private val _error = MutableStateFlow<String?>(null)
     /** Set when the stores could not be read. */
     val loadError: StateFlow<String?> = _error.asStateFlow()
@@ -183,6 +203,8 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
             val searches = LinkedHashMap<String, SearchRecord>()
             val reviews = LinkedHashMap<String, Review>()
             val audit = ArrayList<AuditEntry>()
+            val sentTo = LinkedHashMap<String, List<Pair<String, String>>>()
+            val decisionSent = HashSet<String>()
             for (raw in vault.readAll()) {
                 val o = JSONObject(raw.decodeToString())
                 when (o.optString("t")) {
@@ -190,11 +212,19 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
                     "search" -> readSearch(o)?.let { searches[it.request.searchId] = it }
                     "review" -> readReview(o)?.let { reviews[it.searchId] = it }
                     "audit" -> audit += readAudit(o)
+                    "rsent" -> o.optString("id").let { id ->
+                        val c = o.optString("c")
+                        sentTo[id] = sentTo[id].orEmpty().filterNot { it.first == c } + (c to o.optString("n"))
+                    }
+                    "dsent" -> decisionSent += o.optString("id")
+                    "eseen" -> seen += o.optString("k")
                 }
             }
             _role.value = role
             _searches.value = searches.values.sortedByDescending { it.atMs }
             _reviews.value = reviews
+            _sentTo.value = sentTo
+            _decisionSent.value = decisionSent
             setAudit(audit)
             _roster.value = readRosterSummary()
             _error.value = null
@@ -397,6 +427,175 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
         decided
     }
 
+    // ---- Review across devices -------------------------------------------------------------
+    //
+    // Each device has one operator name, so a search and its review on the same device always
+    // share it and the core refuses. Reviews therefore travel over ÆTHER Talk (MessageKind.EIDETIC):
+    // the searcher sends a review request (request, result, pending review; never the probe or a
+    // template) to a reviewer's device, the reviewer decides it there through eidetic_decide, and
+    // the decision comes back. The searcher's device re-runs eidetic_decide on its own pending
+    // review before applying it, so the core enforces reviewer ≠ searcher on both devices.
+
+    /**
+     * Sends a local search's pending review to the peer of [convo] for review. [send] delivers
+     * the message (AetherNode.sendEidetic). Audited whether or not it was delivered.
+     */
+    suspend fun sendForReview(
+        searchId: String,
+        convo: String,
+        contactName: String,
+        send: suspend (String, EideticMessage) -> Result<Unit>,
+    ): Result<Unit> {
+        val msg = try {
+            io {
+                val s = _searches.value.firstOrNull { it.request.searchId == searchId } ?: error("$searchId is not on record.")
+                if (s.from != null) error("$searchId was run on another device; only its searcher can send it for review.")
+                val result = s.result ?: error("$searchId has no match result to review.")
+                val review = _reviews.value[searchId] ?: error("There is no review for $searchId.")
+                if (review.outcome != ReviewOutcome.PENDING) error("$searchId is already decided.")
+                EideticMessage(ReviewRequest(s.request, result, review), null)
+            }
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val sent = send(convo, msg)
+        return runCatching {
+            io {
+                val actor = actor()
+                val result = msg.request!!.result
+                if (sent.isSuccess) {
+                    record(
+                        actor, "eidetic.review.request.sent", searchId,
+                        "to=${clip(contactName, 64)}; candidates=${result.candidates.size}; probe=${result.probeDigest}",
+                    )
+                    put(JSONObject().put("t", "rsent").put("id", searchId).put("c", convo).put("n", contactName).put("at", now()))
+                    _sentTo.value = _sentTo.value + (searchId to ((_sentTo.value[searchId] ?: emptyList()).filterNot { it.first == convo } + (convo to contactName)))
+                } else {
+                    record(actor, "eidetic.review.request.send_failed", searchId, "to=${clip(contactName, 64)}; reason=${clip(sent.exceptionOrNull()?.let(::eideticMessage) ?: "-")}")
+                }
+            }
+            sent.getOrThrow()
+        }
+    }
+
+    /**
+     * Sends this device's decision on a review request back to the device that asked for it.
+     * Audited whether or not it was delivered; a delivered decision is not offered again.
+     */
+    suspend fun returnDecision(searchId: String, send: suspend (String, EideticMessage) -> Result<Unit>): Result<Unit> {
+        val (convo, name, msg) = try {
+            io {
+                val s = _searches.value.firstOrNull { it.request.searchId == searchId } ?: error("$searchId is not on record.")
+                val from = s.from ?: error("$searchId was run on this device; there is no one to send the decision to.")
+                val review = _reviews.value[searchId] ?: error("There is no review for $searchId.")
+                if (review.outcome == ReviewOutcome.PENDING) error("$searchId is not decided yet.")
+                Triple(from, s.fromName ?: from.takeLast(12), EideticMessage(null, review))
+            }
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+        val sent = send(convo, msg)
+        return runCatching {
+            io {
+                val actor = actor()
+                val d = msg.decision!!
+                if (sent.isSuccess) {
+                    record(actor, "eidetic.review.decision.sent", searchId, "to=${clip(name, 64)}; outcome=${d.outcome.name}")
+                    put(JSONObject().put("t", "dsent").put("id", searchId).put("at", now()))
+                    _decisionSent.value = _decisionSent.value + searchId
+                } else {
+                    record(actor, "eidetic.review.decision.send_failed", searchId, "to=${clip(name, 64)}; reason=${clip(sent.exceptionOrNull()?.let(::eideticMessage) ?: "-")}")
+                }
+            }
+            sent.getOrThrow()
+        }
+    }
+
+    /**
+     * Merges the node's eidetic inbox. Each message is handled once, also across restarts.
+     * Review requests join the review queue (shown to reviewers whose name differs from the
+     * searcher); decisions are applied only to a matching pending review of a search run here,
+     * from a contact it was sent to, after the core re-checks them. Everything is audited.
+     * [names] maps conversations to contact names; [me] is this device's operator name.
+     */
+    suspend fun mergeInbox(items: List<Pair<String, EideticMessage>>, names: Map<String, String>, me: String) {
+        loaded.first { it }
+        if (_error.value != null) return
+        io {
+            val actor = me.replace(Regex("\\p{Cntrl}"), " ").trim().take(128).ifEmpty { _operator.value }
+            if (actor.isEmpty()) return@io
+            for ((convo, msg) in items) {
+                val body = runCatching { encodeEideticMessage(msg) }.getOrNull() ?: continue
+                val key = sha256(convo + "\n" + body)
+                if (key in seen) continue
+                val sender = names[convo] ?: convo.takeLast(12)
+                runCatching {
+                    msg.request?.let { onRequest(actor, convo, sender, it) }
+                    msg.decision?.let { onDecision(actor, convo, sender, it) }
+                }
+                seen += key
+                put(JSONObject().put("t", "eseen").put("k", key).put("at", now()))
+            }
+        }
+    }
+
+    private fun refuse(actor: String, what: String, searchId: String, sender: String, reason: String) {
+        record(actor, "eidetic.review.$what.refused", clip(searchId, 128).ifEmpty { "-" }, "from=${clip(sender, 64)}; reason=${clip(reason)}")
+    }
+
+    private fun onRequest(actor: String, convo: String, sender: String, rr: ReviewRequest) {
+        val q = rr.request
+        val id = q.searchId
+        if (q.searcher.equals(actor, ignoreCase = true)) {
+            return refuse(actor, "request", id, sender, "The searcher's name is this device's operator name; another reviewer must decide it.")
+        }
+        if (_searches.value.any { it.request.searchId == id }) {
+            return refuse(actor, "request", id, sender, "A search with this id is already on record here.")
+        }
+        val decision = eideticAuthorize(q)
+        if (!decision.allowed) return refuse(actor, "request", id, sender, decision.reason)
+        val r = rr.result
+        val scores = r.candidates.joinToString(",") { "${clip(it.subjectId, 64)}:${"%.3f".format(Locale.US, it.score)}" }.ifEmpty { "none" }
+        record(
+            actor, "eidetic.review.request.received", id,
+            "from=${clip(sender, 64)}; searcher=${clip(q.searcher, 64)}; purpose=${q.purpose.name}; dataset=${q.dataset.name}; " +
+                "authority=${clip(q.legalAuthority)}; candidates=$scores; confidence=${"%.3f".format(Locale.US, r.confidence)}; " +
+                "margin=${"%.3f".format(Locale.US, r.margin)}; probe=${r.probeDigest}",
+        )
+        saveSearch(SearchRecord(q, now(), decision, r, null, from = convo, fromName = sender))
+        saveReview(rr.review)
+    }
+
+    private fun onDecision(actor: String, convo: String, sender: String, d: Review) {
+        val id = d.searchId
+        val s = _searches.value.firstOrNull { it.request.searchId == id }
+            ?: return refuse(actor, "decision", id, sender, "No search with this id is on record here.")
+        if (s.from != null) return refuse(actor, "decision", id, sender, "That search was not run on this device.")
+        val result = s.result ?: return refuse(actor, "decision", id, sender, "That search has no match result.")
+        val review = _reviews.value[id] ?: return refuse(actor, "decision", id, sender, "There is no review for that search.")
+        if (_sentTo.value[id].orEmpty().none { it.first == convo }) {
+            return refuse(actor, "decision", id, sender, "That search was not sent to this contact for review.")
+        }
+        if (d.searcher != review.searcher) return refuse(actor, "decision", id, sender, "The decision names a different searcher.")
+        if (review.outcome != ReviewOutcome.PENDING) return refuse(actor, "decision", id, sender, "The review is already decided.")
+        val reviewer = d.reviewer ?: return refuse(actor, "decision", id, sender, "The decision names no reviewer.")
+        if (reviewer.equals(review.searcher, ignoreCase = true)) {
+            return refuse(actor, "decision", id, sender, "The person who ran a search cannot review it.")
+        }
+        // The core re-checks the decision against this device's own pending review and result.
+        val applied = try {
+            eideticDecide(review, result, reviewer, EideticRole.REVIEWER, d.outcome, d.confirmedSubject, d.note, d.decidedAtMs ?: now())
+        } catch (e: AetherException) {
+            return refuse(actor, "decision", id, sender, eideticMessage(e))
+        }
+        record(
+            actor, "eidetic.review.decision.applied", id,
+            "from=${clip(sender, 64)}; reviewer=${clip(reviewer, 64)}; outcome=${applied.outcome.name}; " +
+                "confirmed=${applied.confirmedSubject?.let { clip(it, 64) } ?: "-"}; note=${if (applied.note.isEmpty()) "no" else "yes"}",
+        )
+        saveReview(applied)
+    }
+
     // ---- Persistence ---------------------------------------------------------------------
 
     private suspend fun <T> io(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }
@@ -426,6 +625,7 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
             .put("role", r.request.role.name).put("p", r.request.purpose.name).put("d", r.request.dataset.name)
             .put("auth", r.request.legalAuthority).put("at", r.atMs).put("ok", r.decision.allowed).put("why", r.decision.reason)
             .put("err", r.error ?: "")
+        r.from?.let { o.put("from", it).put("fromName", r.fromName ?: "") }
         r.result?.let { m ->
             val c = JSONArray()
             m.candidates.forEach { c.put(JSONObject().put("s", it.subjectId).put("n", it.displayName).put("sc", it.score.toDouble())) }
@@ -459,7 +659,10 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
                 m.optDouble("conf", 0.0).toFloat(), m.optDouble("mg", 0.0).toFloat(), m.optString("ev"), m.optString("pd"),
             )
         }
-        return SearchRecord(req, o.optLong("at"), PolicyDecision(o.optBoolean("ok"), o.optString("why")), result, o.optString("err").ifEmpty { null })
+        return SearchRecord(
+            req, o.optLong("at"), PolicyDecision(o.optBoolean("ok"), o.optString("why")), result, o.optString("err").ifEmpty { null },
+            from = o.optString("from").ifEmpty { null }, fromName = o.optString("fromName").ifEmpty { null },
+        )
     }
 
     private fun readReview(o: JSONObject): Review? {
@@ -487,6 +690,8 @@ class EideticStore(private val vault: Vault, private val templates: Vault) {
         }
 
         private fun now() = System.currentTimeMillis()
+
+        private fun sha256(s: String): String = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).toHex()
 
         private fun newSearchId(at: Long): String {
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(at))

@@ -363,7 +363,14 @@ private fun DrawScope.drawTiles(vp: MapViewport, maps: MapsStore, pack: MapPack,
     }
 }
 
-private val GRID_STEPS = doubleArrayOf(30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001)
+/** drawText throws when the label starts outside the canvas (negative room left); skip those. */
+private fun DrawScope.mapsLabel(tm: TextMeasurer, text: String, at: Offset, style: TextStyle) {
+    if (!at.x.isFinite() || !at.y.isFinite()) return
+    if (at.x < 0f || at.y < 0f || at.x >= size.width - 1f || at.y >= size.height - 1f) return
+    drawText(tm, text, at, style)
+}
+
+private val GRID_STEPS =doubleArrayOf(30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001)
 
 private fun DrawScope.drawGraticule(vp: MapViewport, w: Float, h: Float, tm: TextMeasurer, labels: Boolean) {
     val world = vp.worldPx
@@ -389,7 +396,7 @@ private fun DrawScope.drawGraticule(vp: MapViewport, w: Float, h: Float, tm: Tex
         drawLine(line, Offset(xs, top), Offset(xs, bottom), stroke)
         if (labels) {
             val norm = ((lon + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
-            drawText(tm, fmtGrid(norm, step, 'E', 'W'), Offset(xs + 3 * density, 2 * density), style)
+            mapsLabel(tm, fmtGrid(norm, step, 'E', 'W'), Offset(xs + 3 * density, 2 * density), style)
         }
         lon += step
     }
@@ -403,7 +410,7 @@ private fun DrawScope.drawGraticule(vp: MapViewport, w: Float, h: Float, tm: Tex
         if (lat >= -MAX_LAT && lat <= MAX_LAT) {
             val y = flat(vp, 0.0, mercY(lat), w, h).y
             drawLine(line, Offset(left, y), Offset(right, y), stroke)
-            if (labels) drawText(tm, fmtGrid(lat, step, 'N', 'S'), Offset(3 * density, y + 2 * density), style)
+            if (labels) mapsLabel(tm, fmtGrid(lat, step, 'N', 'S'), Offset(3 * density, y + 2 * density), style)
         }
         lat += step
     }
@@ -607,5 +614,5 @@ private fun DrawScope.drawScaleBar(vp: MapViewport, h: Float, tm: TextMeasurer, 
     drawLine(Ink, Offset(x, y), Offset(x + px, y), 2f * density)
     drawLine(Ink, Offset(x, y - 5 * density), Offset(x, y), 2f * density)
     drawLine(Ink, Offset(x + px, y - 5 * density), Offset(x + px, y), 2f * density)
-    drawText(tm, fmtDistance(meters), Offset(x, y - 19 * density), TextStyle(fontSize = 10.sp, color = Ink, fontFamily = Mono))
+    mapsLabel(tm, fmtDistance(meters), Offset(x, y - 19 * density), TextStyle(fontSize = 10.sp, color = Ink, fontFamily = Mono))
 }
