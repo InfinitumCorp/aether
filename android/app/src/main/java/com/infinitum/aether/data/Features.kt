@@ -12,4 +12,5 @@ class Features(context: Context, store: Store) {
     val maps: MapsStore by lazy { MapsStore(app, store.openVault("maps")) }
     val field: FieldStore by lazy { FieldStore(store.openVault("field")) }
     val eidetic: EideticStore by lazy { EideticStore(store.openVault("eidetic"), store.openVault("eidetic-templates")) }
+    val media by lazy { MediaStore(app, store.openVault("media")) }
 }

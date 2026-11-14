@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ÆTHER Talk™: only decrypted copies the user chose to open or share are exposed, never the sealed store. -->
+<paths>
+    <cache-path name="open" path="media-open/" />
+</paths>
