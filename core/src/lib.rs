@@ -31,6 +31,7 @@ mod identity;
 mod keydrop;
 mod nav;
 mod session;
+mod social;
 mod vault;
 
 pub use audit::{audit_append, audit_verify, AuditEntry};
@@ -70,6 +71,10 @@ pub use nav::{
 };
 pub use keydrop::{decode_key_drop, encode_key_drop, suggest_codename, KeyDrop};
 pub use session::{Handshake, Session, LATEST_PROTOCOL, NOISE_PARAMS, NOISE_PARAMS_V2, PROLOGUE, PROLOGUE_V2};
+pub use social::{
+    decode_social, encode_social, social_chunk_count, social_event, social_validate, SocialEvent, SocialKind, SOCIAL_CHUNK_BYTES,
+    SOCIAL_MAX_FILE_BYTES, SOCIAL_TIMERS,
+};
 pub use vault::Vault;
 
 /// Version byte of the plaintext message envelope (independent of the handshake version).

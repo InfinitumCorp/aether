@@ -24,6 +24,8 @@ pub enum MessageKind {
     Field,
     /// An eidetic MIL review request or decision; `body` is an encoded [`crate::EideticMessage`].
     Eidetic,
+    /// Messenger features (ids, replies, edits, reactions, receipts, typing, groups, files); `body` is an encoded [`crate::SocialEvent`].
+    Social,
 }
 
 impl MessageKind {
@@ -37,6 +39,7 @@ impl MessageKind {
             Self::Position => 6,
             Self::Field => 7,
             Self::Eidetic => 8,
+            Self::Social => 9,
         }
     }
     fn from_byte(b: u8) -> Option<Self> {
@@ -49,6 +52,7 @@ impl MessageKind {
             6 => Self::Position,
             7 => Self::Field,
             8 => Self::Eidetic,
+            9 => Self::Social,
             _ => return None,
         })
     }
