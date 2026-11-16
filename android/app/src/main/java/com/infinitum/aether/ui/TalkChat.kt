@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.infinitum.aether.data.MediaStore
 import com.infinitum.aether.data.SOCIAL_TIMERS
 import com.infinitum.aether.data.StoredMessage
 import com.infinitum.aether.data.convo
@@ -105,6 +106,8 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
     val scope = rememberCoroutineScope()
     val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val mine = remember(convo, group) { node.ownKeyFor(convo) }
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val media = remember { (ctx.applicationContext as com.infinitum.aether.AetherApp).features.media }
     LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.size - 1) }
 
     // Read receipts: while this chat is on screen (resumed), mark the newest incoming message read.
@@ -194,6 +197,7 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                         node, m, i, isGroup, via, mine, fmt, byId,
                         onLongPress = { selected = m },
                         onReact = { emoji -> m.id?.let { id -> scope.launch { node.toggleReaction(convo, id, emoji).onFailure { error = it.message } } } },
+                        media = media,
                     )
                 }
             }
@@ -224,7 +228,29 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
             Modifier.fillMaxWidth().padding(horizontal = GUTTER.dp, vertical = 12.dp).navigationBarsPadding(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // MEDIA: attach button (photo / file / voice) goes here, before the text field.
+            if (canSend && editing == null) {
+                // Photos, files and voice messages: seal locally, then send offer → chunks → message.
+                fun send(prep: suspend () -> Result<MediaStore.Outgoing>) {
+                    val caption = draft.trim()
+                    scope.launch {
+                        val out = prep().getOrElse { error = it.message ?: "Could not attach"; return@launch }
+                        node.sendFile(convo, out.offer, out.chunks, caption) { n ->
+                            media.markProgress(out.fileId, minOf(out.size, n.toLong() * 32_768L /* core SOCIAL_CHUNK_BYTES */))
+                        }.onSuccess {
+                            media.markSent(out.fileId)
+                            if (caption.isNotEmpty()) draft = ""
+                        }.onFailure {
+                            media.markFailed(out.fileId)
+                            error = it.message ?: "Not sent"
+                        }
+                    }
+                }
+                AttachButton(
+                    onPicked = { uri -> send { media.prepareOutgoing(uri) } },
+                    onVoice = { file, _ -> send { media.prepareOutgoing(file, "Voice message.m4a", "audio/mp4") } },
+                )
+                Spacer(Modifier.size(8.dp))
+            }
             OutlinedTextField(
                 value = draft, onValueChange = { draft = it.take(8000); error = null },
                 placeholder = {
@@ -298,6 +324,7 @@ private fun Bubble(
     byId: Map<String, StoredMessage>,
     onLongPress: () -> Unit,
     onReact: (String) -> Unit,
+    media: MediaStore,
 ) {
     val fg = if (m.outgoing) Paper else Ink
     val sub = if (m.outgoing) Wash else Body
@@ -334,7 +361,15 @@ private fun Bubble(
             if (m.deleted) {
                 Text("Message deleted", style = MaterialTheme.typography.bodyLarge.copy(fontStyle = FontStyle.Italic), color = sub, modifier = Modifier.testTag("msg_deleted"))
             } else {
-                Text(chatBodyText(m).ifEmpty { if (m.fileId != null) "Attachment" else "" }, style = MaterialTheme.typography.bodyLarge, color = fg)
+                val file = m.fileId?.let { media.files.collectAsState().value[it] }
+                if (file != null) {
+                    MediaBubble(file, media)
+                    if (m.body.isNotBlank()) Spacer(Modifier.height(6.dp))
+                }
+                val text = chatBodyText(m)
+                if (text.isNotBlank() || file == null) {
+                    Text(text.ifEmpty { if (m.fileId != null) "Attachment (not received)" else "" }, style = MaterialTheme.typography.bodyLarge, color = fg)
+                }
             }
         }
         // Meta line under the bubble, on paper, so the read mark can use the accent.

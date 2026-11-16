@@ -790,6 +790,32 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         return r
     }
 
+    /**
+     * Sends a prepared file to [convo]: the offer, every chunk, then the message that shows it
+     * (with [caption]). [onChunk] gets the number of chunks sent so far.
+     */
+    suspend fun sendFile(
+        convo: String,
+        offer: SocialEvent,
+        chunks: Sequence<SocialEvent>,
+        caption: String = "",
+        onChunk: (Int) -> Unit = {},
+    ): Result<Unit> {
+        sendSocial(convo, offer).onFailure { return Result.failure(it) }
+        var n = 0
+        for (c in chunks) {
+            sendSocial(convo, c).onFailure { return Result.failure(it) }
+            onChunk(++n)
+        }
+        val e = socialEvent(SocialKind.MESSAGE).apply {
+            id = randomId()
+            text = caption
+            target = offer.id
+            expiresS = chats.get(convo).timerS.toUInt()
+        }
+        return sendSocial(convo, e)
+    }
+
     suspend fun editMessage(convo: String, id: String, text: String): Result<Unit> =
         sendSocial(convo, socialEvent(SocialKind.EDIT).apply { target = id; this.text = text })
 
