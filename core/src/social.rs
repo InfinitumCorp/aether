@@ -6,7 +6,7 @@
 //! order. Groups are fanned out pairwise: the sender encrypts the same event to every member over
 //! that member's own session, so the mesh never sees group membership in the clear.
 
-use crate::AetherError;
+use crate::{AetherError, Precedence};
 
 const HEADER: &str = "AETHER-SOCIAL/1";
 /// Raw bytes per file chunk; base64 keeps one chunk well inside a Noise frame.
@@ -43,6 +43,10 @@ pub enum SocialKind {
     FileChunk,
     /// Disappearing-message timer for the chat (or `group_id`) set to `expires_s`.
     Timer,
+    /// Pin message `target` at the top of the chat (or `group_id`); `flag` = true unpins it.
+    Pin,
+    /// Wipe the whole chat (or `group_id`) on every device: messages, files and pins.
+    Wipe,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -62,6 +66,12 @@ pub struct SocialEvent {
     pub sha256: String,
     pub index: u32,
     pub total: u32,
+    /// Message precedence: Routine, Priority, Immediate or Flash.
+    pub precedence: Precedence,
+    /// Group admins (identity keys, hex). They change the group, pin, wipe and, in a channel, post.
+    pub admins: Vec<String>,
+    /// Unit channel: a broadcast group where only admins post.
+    pub channel: bool,
 }
 
 impl SocialEvent {
@@ -82,6 +92,9 @@ impl SocialEvent {
             sha256: String::new(),
             index: 0,
             total: 0,
+            precedence: Precedence::Routine,
+            admins: Vec::new(),
+            channel: false,
         }
     }
 }
@@ -183,6 +196,16 @@ pub fn social_validate(event: SocialEvent) -> Result<(), AetherError> {
                     return Err(bad("group members must be distinct identity keys"));
                 }
             }
+            if e.admins.is_empty() {
+                return Err(bad("a group needs at least one admin"));
+            }
+            let mut admins = std::collections::HashSet::new();
+            for a in &e.admins {
+                let a = a.to_ascii_lowercase();
+                if !seen.contains(&a) || !admins.insert(a) {
+                    return Err(bad("group admins must be distinct members"));
+                }
+            }
         }
         SocialKind::Leave => need_id(&e.group_id, "group id")?,
         SocialKind::FileOffer => {
@@ -219,6 +242,11 @@ pub fn social_validate(event: SocialEvent) -> Result<(), AetherError> {
                 return Err(bad("unsupported disappearing timer"));
             }
         }
+        SocialKind::Pin => need_id(&e.target, "pinned message")?,
+        SocialKind::Wipe => {}
+    }
+    if e.kind != SocialKind::Group && (e.channel || !e.admins.is_empty()) {
+        return Err(bad("only a group event carries admins or a channel flag"));
     }
     Ok(())
 }
@@ -236,6 +264,8 @@ fn kind_code(k: SocialKind) -> &'static str {
         SocialKind::FileOffer => "file",
         SocialKind::FileChunk => "chunk",
         SocialKind::Timer => "timer",
+        SocialKind::Pin => "pin",
+        SocialKind::Wipe => "wipe",
     }
 }
 
@@ -252,6 +282,8 @@ fn kind_from(code: &str) -> Option<SocialKind> {
         "file" => SocialKind::FileOffer,
         "chunk" => SocialKind::FileChunk,
         "timer" => SocialKind::Timer,
+        "pin" => SocialKind::Pin,
+        "wipe" => SocialKind::Wipe,
         _ => return None,
     })
 }
@@ -291,7 +323,28 @@ fn unesc(s: &str) -> Result<String, AetherError> {
     Ok(o)
 }
 
-const FIELDS: usize = 15;
+/// Fields in the first release of the format (no precedence, admins or channel); still accepted.
+const FIELDS_V1: usize = 15;
+const FIELDS: usize = 18;
+
+fn precedence_code(p: Precedence) -> &'static str {
+    match p {
+        Precedence::Routine => "R",
+        Precedence::Priority => "P",
+        Precedence::Immediate => "O",
+        Precedence::Flash => "Z",
+    }
+}
+
+fn precedence_from(s: &str) -> Option<Precedence> {
+    Some(match s {
+        "R" => Precedence::Routine,
+        "P" => Precedence::Priority,
+        "O" => Precedence::Immediate,
+        "Z" => Precedence::Flash,
+        _ => return None,
+    })
+}
 
 #[uniffi::export]
 pub fn encode_social(event: SocialEvent) -> Result<String, AetherError> {
@@ -313,6 +366,9 @@ pub fn encode_social(event: SocialEvent) -> Result<String, AetherError> {
         esc(&e.sha256.to_ascii_lowercase()),
         e.index.to_string(),
         e.total.to_string(),
+        precedence_code(e.precedence).to_owned(),
+        e.admins.iter().map(|m| esc(&m.to_ascii_lowercase())).collect::<Vec<_>>().join(","),
+        (e.channel as u8).to_string(),
     ];
     let body = format!("{HEADER}\n{}", fields.join("|"));
     if body.len() > crate::MAX_BODY_BYTES {
@@ -328,7 +384,7 @@ pub fn decode_social(body: String) -> Result<SocialEvent, AetherError> {
         return Err(bad("social message has extra lines"));
     }
     let f: Vec<&str> = rest.split('|').collect();
-    if f.len() != FIELDS {
+    if f.len() != FIELDS && f.len() != FIELDS_V1 {
         return Err(bad("social message has the wrong number of fields"));
     }
     let flag = |s: &str| match s {
@@ -352,6 +408,14 @@ pub fn decode_social(body: String) -> Result<SocialEvent, AetherError> {
     e.sha256 = unesc(f[12])?;
     e.index = u32::try_from(num(f[13])?).map_err(|_| bad("bad index"))?;
     e.total = u32::try_from(num(f[14])?).map_err(|_| bad("bad total"))?;
+    if f.len() == FIELDS {
+        e.precedence = precedence_from(f[15]).ok_or_else(|| bad("bad precedence"))?;
+        e.admins = if f[16].is_empty() { Vec::new() } else { f[16].split(',').map(unesc).collect::<Result<_, _>>()? };
+        e.channel = flag(f[17])?;
+    } else if e.kind == SocialKind::Group {
+        // First-release group events carried no roles: every member counts as an admin.
+        e.admins = e.members.clone();
+    }
     social_validate(e.clone())?;
     Ok(e)
 }
@@ -419,10 +483,17 @@ mod tests {
             group_id: "g-1".into(),
             text: "BRAVO | net".into(),
             members: vec![a.clone(), b.clone()],
+            admins: vec![a.clone()],
+            channel: true,
             ..SocialEvent::blank(SocialKind::Group)
         };
         let back = rt(g.clone());
         assert_eq!(back.members, vec![a.clone(), b.to_ascii_lowercase()]);
+        assert_eq!(back.admins, vec![a.clone()]);
+        assert!(back.channel);
+        assert!(encode_social(SocialEvent { admins: vec![], ..g.clone() }).is_err());
+        assert!(encode_social(SocialEvent { admins: vec!["c".repeat(64)], ..g.clone() }).is_err());
+        assert!(encode_social(SocialEvent { admins: vec![a.clone(), a.clone()], ..g.clone() }).is_err());
         assert_eq!(back.text, "BRAVO | net");
         assert!(encode_social(SocialEvent { members: vec![a.clone()], ..g.clone() }).is_err());
         assert!(encode_social(SocialEvent { members: vec![a.clone(), a.to_uppercase()], ..g.clone() }).is_err());
@@ -457,6 +528,32 @@ mod tests {
         assert!(encode_social(SocialEvent { index: 4, ..chunk.clone() }).is_err());
         assert!(encode_social(SocialEvent { text: format!("{full}AAAA"), ..chunk.clone() }).is_err());
         assert!(encode_social(SocialEvent { text: "not base64!".into(), ..chunk }).is_err());
+    }
+
+    #[test]
+    fn military() {
+        let flash = SocialEvent { precedence: Precedence::Flash, ..msg("contact front") };
+        assert_eq!(rt(flash.clone()), flash);
+        let pin = SocialEvent { target: "m-1".into(), group_id: "g-1".into(), ..SocialEvent::blank(SocialKind::Pin) };
+        assert_eq!(rt(pin.clone()), pin);
+        assert!(encode_social(SocialEvent::blank(SocialKind::Pin)).is_err());
+        let wipe = SocialEvent { group_id: "g-1".into(), ..SocialEvent::blank(SocialKind::Wipe) };
+        assert_eq!(rt(wipe.clone()), wipe);
+        assert!(encode_social(SocialEvent { channel: true, ..msg("x") }).is_err());
+        let body = encode_social(flash).unwrap();
+        assert!(decode_social(body.replace("|Z|", "|Q|")).is_err());
+    }
+
+    #[test]
+    fn first_release_bodies_still_decode() {
+        let v1 = "AETHER-SOCIAL/1\nmsg|m-1|||hi||0|0|0|||0||0|0";
+        let e = decode_social(v1.into()).unwrap();
+        assert_eq!(e.text, "hi");
+        assert_eq!(e.precedence, Precedence::Routine);
+        let a = "a".repeat(64);
+        let b = "b".repeat(64);
+        let g = format!("AETHER-SOCIAL/1\ngroup|||g-1|Net||0|0|0|{a},{b}||0||0|0");
+        assert_eq!(decode_social(g).unwrap().admins, vec![a, b]);
     }
 
     #[test]
