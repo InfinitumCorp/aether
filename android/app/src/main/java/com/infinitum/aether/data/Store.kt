@@ -38,14 +38,38 @@ data class StoredMessage(
     val via: String? = null,
     /**
      * [KIND_POSITION], [KIND_FIELD] or [KIND_EIDETIC] when [body] is an encoded position report,
-     * field message or eidetic review message.
+     * field message or eidetic review message; [KIND_SYSTEM] for a chat system line. Null is text.
      */
     val kind: String? = null,
+    // ---- ÆTHER Talk™ messenger state (all optional; legacy records load with the defaults) ----
+    /** Social message id; null for legacy plain-text messages. A later record with the same id replaces this one. */
+    val id: String? = null,
+    val replyTo: String? = null,
+    val forwarded: Boolean = false,
+    val edited: Boolean = false,
+    /** Deleted for everyone: [body] is emptied and the bubble shows "Message deleted". */
+    val deleted: Boolean = false,
+    /** Emoji → identity keys (hex) of everyone who reacted with it. */
+    val reactions: Map<String, Set<String>> = emptyMap(),
+    /** Local wall-clock time after which the message is purged; 0 = never. */
+    val expiresAt: Long = 0,
+    /** Outgoing only: [DELIVERY_SENT], [DELIVERY_DELIVERED] or [DELIVERY_READ]. */
+    val delivery: Int = DELIVERY_SENT,
+    /** Group this message belongs to; then [peerKeyHex] is the sender (own key when outgoing). */
+    val groupId: String? = null,
+    /** File id of an attached photo, file or voice message (social Message `target`), for the media code. */
+    val fileId: String? = null,
 ) {
+    fun expired(now: Long = System.currentTimeMillis()) = expiresAt in 1..now
+
     companion object {
         const val KIND_POSITION = "pos"
         const val KIND_FIELD = "field"
         const val KIND_EIDETIC = "eid"
+        const val KIND_SYSTEM = "sys"
+        const val DELIVERY_SENT = 0
+        const val DELIVERY_DELIVERED = 1
+        const val DELIVERY_READ = 2
     }
 }
 
@@ -72,7 +96,11 @@ data class Bundle(val id: String, val size: Int, val period: String, val granted
 fun convoKey(via: String?, peerKeyHex: String) = if (via == null) peerKeyHex else "b:$via:$peerKeyHex"
 
 val Contact.convo get() = convoKey(via, keyHex)
-val StoredMessage.convo get() = convoKey(via, peerKeyHex)
+val StoredMessage.convo get() = if (groupId != null) groupConvo(groupId) else convoKey(via, peerKeyHex)
+
+/** Conversation key of a group chat. */
+fun groupConvo(groupId: String) = "g:$groupId"
+fun isGroupConvo(convo: String) = convo.startsWith("g:")
 
 /** JSON event encoding shared by the main log and each burner's vault. */
 object EventLog {
@@ -80,14 +108,65 @@ object EventLog {
         JSONObject().put("t", "contact").put("k", c.keyHex).put("n", c.name).put("v", c.verified)
             .put("p", c.pinned).put("c", c.codename ?: "").put("a", JSONArray(c.addresses)).put("q", c.pq)
 
-    fun messageJson(m: StoredMessage): JSONObject =
-        JSONObject().put("t", "msg").put("k", m.peerKeyHex).put("o", m.outgoing).put("ts", m.sentAtMs)
+    fun messageJson(m: StoredMessage): JSONObject {
+        val o = JSONObject().put("t", "msg").put("k", m.peerKeyHex).put("o", m.outgoing).put("ts", m.sentAtMs)
             .put("b", m.body).put("d", m.drop).put("y", m.kind ?: "")
+        // Messenger fields only when set, so plain records stay as small as before.
+        m.id?.let { o.put("id", it) }
+        m.replyTo?.let { o.put("re", it) }
+        if (m.forwarded) o.put("fw", true)
+        if (m.edited) o.put("ed", true)
+        if (m.deleted) o.put("del", true)
+        if (m.reactions.isNotEmpty()) o.put("rx", JSONObject().apply { m.reactions.forEach { (e, ks) -> put(e, JSONArray(ks.toList())) } })
+        if (m.expiresAt > 0) o.put("exp", m.expiresAt)
+        if (m.delivery != StoredMessage.DELIVERY_SENT) o.put("dl", m.delivery)
+        m.groupId?.let { o.put("g", it) }
+        m.fileId?.let { o.put("f", it) }
+        return o
+    }
 
-    /** Replays contact/message events; other event types are ignored. Keys are conversation keys. */
-    fun replay(events: List<JSONObject>, via: String?): Pair<Map<String, Contact>, List<StoredMessage>> {
+    /** "Delete for me": a later record that removes message [id] of [convo] on replay. */
+    fun goneJson(convo: String, id: String): JSONObject = JSONObject().put("t", "gone").put("c", convo).put("id", id)
+
+    fun isMessageRecord(o: JSONObject) = o.optString("t").let { it == "msg" || it == "gone" }
+
+    private fun message(o: JSONObject, via: String?): StoredMessage {
+        val rx = o.optJSONObject("rx")
+        val reactions = if (rx == null) emptyMap() else rx.keys().asSequence().associateWith { e ->
+            val a = rx.getJSONArray(e); (0 until a.length()).map { a.getString(it) }.toSet()
+        }.filterValues { it.isNotEmpty() }
+        return StoredMessage(
+            o.getString("k"), o.getBoolean("o"), o.getLong("ts"), o.getString("b"), o.optBoolean("d"), via,
+            o.optString("y").ifEmpty { null },
+            id = o.optString("id").ifEmpty { null },
+            replyTo = o.optString("re").ifEmpty { null },
+            forwarded = o.optBoolean("fw"),
+            edited = o.optBoolean("ed"),
+            deleted = o.optBoolean("del"),
+            reactions = reactions,
+            expiresAt = o.optLong("exp", 0),
+            delivery = o.optInt("dl", StoredMessage.DELIVERY_SENT),
+            groupId = o.optString("g").ifEmpty { null },
+            fileId = o.optString("f").ifEmpty { null },
+        )
+    }
+
+    /** Result of [replay]: contacts, current messages, and how many records were superseded. */
+    data class Replay(val contacts: Map<String, Contact>, val messages: List<StoredMessage>, val superseded: Int)
+
+    /**
+     * Replays contact/message events; other event types are ignored. Keys are conversation keys.
+     * A message record with the same conversation and id as an earlier one replaces it in place
+     * (edits, deletes, reactions, delivery state); a `gone` record removes it.
+     */
+    fun replay(events: List<JSONObject>, via: String?): Pair<Map<String, Contact>, List<StoredMessage>> =
+        replayFull(events, via).let { it.contacts to it.messages }
+
+    fun replayFull(events: List<JSONObject>, via: String?): Replay {
         val contacts = LinkedHashMap<String, Contact>()
-        val messages = ArrayList<StoredMessage>()
+        val messages = ArrayList<StoredMessage?>()
+        val byId = HashMap<String, Int>() // convo|id -> index in messages
+        var superseded = 0
         for (o in events) when (o.optString("t")) {
             "contact" -> {
                 val k = o.getString("k")
@@ -101,12 +180,21 @@ object EventLog {
                 )
                 contacts[c.convo] = c
             }
-            "msg" -> messages += StoredMessage(
-                o.getString("k"), o.getBoolean("o"), o.getLong("ts"), o.getString("b"), o.optBoolean("d"), via,
-                o.optString("y").ifEmpty { null },
-            )
+            "msg" -> {
+                val m = message(o, via)
+                val key = m.id?.let { "${m.convo}|$it" }
+                val at = key?.let { byId[it] }
+                if (at != null) { messages[at] = m; superseded++ } else {
+                    messages += m
+                    if (key != null) byId[key] = messages.size - 1
+                }
+            }
+            "gone" -> {
+                val at = byId.remove("${o.optString("c")}|${o.optString("id")}")
+                if (at != null) { messages[at] = null; superseded += 2 }
+            }
         }
-        return contacts to messages
+        return Replay(contacts, messages.filterNotNull(), superseded)
     }
 }
 
@@ -120,7 +208,7 @@ class Store(context: Context) {
     private val dir = File(context.noBackupFilesDir, "aether").apply { mkdirs() }
     private val keys = KeyWrapper(context)
     private val identityVault: Vault
-    private val logVault: Vault
+    @Volatile private var logVault: Vault
     private val numbersVault: Vault
 
     val keyBacking: String get() = keys.hardwareBacking
@@ -169,12 +257,50 @@ class Store(context: Context) {
     }
 
     /** Replays the real identity's event log into contacts and messages. */
-    fun loadLog(): Pair<Map<String, Contact>, List<StoredMessage>> =
-        EventLog.replay(logVault.readAll().map { JSONObject(it.decodeToString()) }, via = null)
+    @Synchronized
+    fun loadLog(): Pair<Map<String, Contact>, List<StoredMessage>> = loadLogFull().let { it.contacts to it.messages }
 
+    @Synchronized
+    fun loadLogFull(): EventLog.Replay =
+        EventLog.replayFull(logVault.readAll().map { JSONObject(it.decodeToString()) }, via = null)
+
+    @Synchronized
     fun saveContact(c: Contact) = logVault.append(EventLog.contactJson(c).toString().toByteArray())
 
+    @Synchronized
     fun saveMessage(m: StoredMessage) = logVault.append(EventLog.messageJson(m).toString().toByteArray())
+
+    @Synchronized
+    fun saveGone(convo: String, id: String) = logVault.append(EventLog.goneJson(convo, id).toString().toByteArray())
+
+    /**
+     * Rewrites `messages.vault` so it holds every non-message record as before and exactly
+     * [keep] as its messages. Expired, deleted and superseded message text is gone from disk.
+     */
+    @Synchronized
+    fun compactLog(keep: List<StoredMessage>) {
+        val others = logVault.readAll().filter { !EventLog.isMessageRecord(JSONObject(it.decodeToString())) }
+        logVault = rewriteVault("messages", others + keep.map { EventLog.messageJson(it).toString().toByteArray() })
+    }
+
+    /**
+     * Replaces vault [name] with a fresh one holding [records], via a temporary file and an
+     * atomic rename. The old [Vault] object for [name] must not be used afterwards.
+     */
+    @Synchronized
+    fun rewriteVault(name: String, records: List<ByteArray>): Vault {
+        require(name.matches(Regex("[a-z0-9-]{1,32}"))) { "bad vault name" }
+        val tmp = File(dir, "$name.vault.tmp").apply { delete() }
+        val key = keys.dataKey()
+        try {
+            val v = Vault.open(tmp.path, key)
+            try { records.forEach { v.append(it) } } finally { v.destroy() }
+        } finally {
+            key.fill(0)
+        }
+        check(tmp.renameTo(File(dir, "$name.vault"))) { "could not replace $name.vault" }
+        return openVault(name)
+    }
 
     /** Bundles granted so far, and the current remote-burn code hash (if one is set). */
     fun loadNumbersLog(): Pair<List<Bundle>, ByteArray?> {

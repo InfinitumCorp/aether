@@ -411,7 +411,7 @@ private fun Shell(node: AetherNode, keyBacking: () -> String, scratchDir: File, 
                         onDiagnostics = { screen = Screen.Diagnostics },
                         onNumbers = { screen = Screen.Numbers },
                     )
-                    is Screen.Chat -> Chat(node, s.convo, onBack = { screen = Screen.Home })
+                    is Screen.Chat -> TalkChat(node, s.convo, onBack = { screen = Screen.Home }, onOpenChat = { screen = Screen.Chat(it) })
                     Screen.Numbers -> Numbers(node, onBack = { screen = Screen.Home })
                     Screen.Diagnostics -> Diagnostics(node, keyBacking(), scratchDir, onBack = { screen = Screen.Home })
                     Screen.Maps -> MapsScreen(node, features().maps)
@@ -465,23 +465,7 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
                 ) { node.connect(p.host, p.port) }
             }
             item { Section(2, "ÆTHER Talk™ · conversations") }
-            if (contacts.isEmpty()) item { Hint("Connect to a nearby node, or enter an address with Connect +.") }
-            items(contacts.values.toList(), key = { it.convo }) { c ->
-                val last = messages.lastOrNull { it.convo == c.convo }
-                val st = states[c.convo] ?: LinkState.OFFLINE
-                val via = c.via?.let { "via " + AetherNode.formatNumber(node.numberOf(it)) + " · " } ?: ""
-                ListRow(
-                    tag = "contact_${c.name}",
-                    online = st == LinkState.ONLINE,
-                    title = c.name + (c.codename?.let { "  · $it" } ?: "") + if (c.verified) "  ✓" else "",
-                    subtitle = via + when {
-                        last == null -> if (c.pinned) "Pinned key · tap to connect" else "No messages yet"
-                        last.drop -> "Key drop · " + (runCatching { decodeKeyDrop(last.body).codename }.getOrNull() ?: "")
-                        else -> last.body
-                    },
-                    trailing = st.name.lowercase(),
-                ) { onOpenChat(c.convo) }
-            }
+            item { TalkConversations(node, onOpenChat) }
         }
     }
 
@@ -579,165 +563,12 @@ private fun ConnectDialog(onDismiss: () -> Unit, onConnect: (String, Int) -> Uni
     )
 }
 
-// ---- Chat ------------------------------------------------------------------------------
-
-@Composable
-private fun Chat(node: AetherNode, convo: String, onBack: () -> Unit) {
-    val contacts by node.contacts.collectAsState()
-    val all by node.messages.collectAsState()
-    val states by node.linkStates.collectAsState()
-    val contact = contacts[convo]
-    val burnerList by node.burners.collectAsState()
-    val viaBurner = contact?.via?.let { id -> burnerList.firstOrNull { it.id == id } }
-    val msgs = remember(all, convo) { all.filter { it.convo == convo } }
-    val online = states[convo] == LinkState.ONLINE
-    val peerCert = node.peerCerts.collectAsState().value[convo]
-    var draft by rememberSaveable { mutableStateOf("") }
-    var showSafety by remember { mutableStateOf(false) }
-    var showDrop by remember { mutableStateOf(false) }
-    val list = rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val fmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    LaunchedEffect(msgs.size) { if (msgs.isNotEmpty()) list.animateScrollToItem(msgs.size - 1) }
-
-    Column(Modifier.fillMaxSize().imePadding()) {
-        BrandBar(onBack = onBack, backTag = "chat_back", actions = {
-            if (online) BarAction("Drop key ↓", "chat_drop") { showDrop = true }
-            BarAction(if (contact?.verified == true) "Verified ✓" else "Verify", "chat_safety") { showSafety = true }
-        })
-        Column(Modifier.fillMaxWidth().padding(horizontal = GUTTER.dp, vertical = 18.dp)) {
-            Text(contact?.name ?: "Peer", style = MaterialTheme.typography.headlineMedium, color = Ink)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusMark(online)
-                Spacer(Modifier.size(8.dp))
-                Kicker(
-                    if (online) "End-to-end encrypted · " + (if (contact?.pq == true) "post-quantum" else "classical") +
-                        when (peerCert?.status) {
-                            null -> ""
-                            PeerCertStatus.VALID -> " · certified ${peerCert.label}"
-                            PeerCertStatus.ABSENT -> " · uncertified"
-                            else -> " · certificate ${peerCert.status.name.lowercase()}"
-                        } + " · online" else "Offline",
-                    color = if (online) Ink else Body,
-                    modifier = Modifier.testTag("chat_status"),
-                )
-            }
-            if (viaBurner != null) {
-                Spacer(Modifier.height(6.dp))
-                Kicker("Via ${AetherNode.formatNumber(viaBurner.number)} · ${viaBurner.label}", color = Ink, modifier = Modifier.testTag("chat_via"))
-            }
-            if (contact?.pinned == true) {
-                Spacer(Modifier.height(6.dp))
-                Kicker("Pinned key · ${contact.codename ?: ""}", color = Ink, modifier = Modifier.testTag("chat_pinned"))
-            }
-        }
-        Hairline()
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            state = list,
-            contentPadding = PaddingValues(horizontal = GUTTER.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(msgs) { m ->
-                if (m.drop) { DropCard(node, m, fmt); return@items }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = if (m.outgoing) Arrangement.End else Arrangement.Start) {
-                    Column(
-                        Modifier.widthIn(max = 290.dp)
-                            .background(if (m.outgoing) InkButton else Wash)
-                            .padding(horizontal = 14.dp, vertical = 10.dp)
-                            .testTag(if (m.outgoing) "msg_out" else "msg_in"),
-                    ) {
-                        Text(chatBodyText(m), style = MaterialTheme.typography.bodyLarge, color = if (m.outgoing) Paper else Ink)
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            fmt.format(Date(m.sentAtMs)),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (m.outgoing) RuleStrong else Body,
-                            modifier = Modifier.align(Alignment.End),
-                        )
-                    }
-                }
-            }
-        }
-        Hairline()
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = GUTTER.dp, vertical = 12.dp).navigationBarsPadding(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = draft, onValueChange = { draft = it },
-                placeholder = { Text(if (online) "Encrypted message" else "Peer offline", color = Body) },
-                enabled = online,
-                shape = MaterialTheme.shapes.small,
-                colors = fieldColors(),
-                modifier = Modifier.weight(1f).testTag("chat_input"),
-                maxLines = 4,
-            )
-            Spacer(Modifier.size(10.dp))
-            PrimaryButton("Send", enabled = online && draft.isNotBlank(), tag = "chat_send") {
-                val text = draft.trim()
-                scope.launch { if (node.send(convo, text)) draft = "" }
-            }
-        }
-        if (!online) {
-            TextButton(onClick = { node.redial(convo) }, modifier = Modifier.align(Alignment.CenterHorizontally).padding(bottom = 8.dp)) {
-                Text("Reconnect if nearby ↗", color = Ink)
-            }
-        }
-    }
-
-    if (showDrop) DropDialog(
-        node = node,
-        convo = convo,
-        onDismiss = { showDrop = false },
-    )
-
-    if (showSafety) {
-        val sn = remember { node.safetyNumber(convo) }
-        AlertDialog(
-            onDismissRequest = { showSafety = false },
-            containerColor = Paper,
-            shape = MaterialTheme.shapes.small,
-            title = { Text("Safety number", style = MaterialTheme.typography.titleLarge, color = Ink) },
-            text = {
-                Column {
-                    Text(
-                        if (sn != null) "Compare this number with ${contact?.name ?: "your peer"} in person or over a trusted channel. " +
-                            "If it matches on both devices, nobody is intercepting this conversation."
-                        else "Connect to this peer to compute the safety number.",
-                        color = Body,
-                    )
-                    if (sn != null) {
-                        Spacer(Modifier.height(16.dp))
-                        Column(Modifier.fillMaxWidth().border(1.dp, Rule).padding(14.dp)) {
-                            Text(
-                                sn.chunked(24).joinToString("\n") { it.trim() },
-                                style = MaterialTheme.typography.bodyMedium.copy(fontFamily = Mono),
-                                color = Ink,
-                                modifier = Modifier.testTag("safety_number"),
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                if (sn != null && contact?.verified != true) {
-                    TextButton(onClick = { node.markVerified(convo); showSafety = false }, modifier = Modifier.testTag("safety_verify")) {
-                        Text("Mark as verified ✓", color = Ink)
-                    }
-                } else {
-                    TextButton(onClick = { showSafety = false }) { Text("Close", color = Ink) }
-                }
-            },
-        )
-    }
-}
+// ---- Chat: see TalkChat.kt ---------------------------------------------------------------
 
 // ---- Key Drop ----------------------------------------------------------------------------
 
 /** Position reports and Field messages travel encoded; show a readable line instead of the wire text. */
-private fun chatBodyText(m: StoredMessage): String = when (m.kind) {
+internal fun chatBodyText(m: StoredMessage): String = when (m.kind) {
     StoredMessage.KIND_POSITION -> runCatching {
         val r = uniffi.aether_core.decodePosition(m.body)
         val at = uniffi.aether_core.formatCoordinate(uniffi.aether_core.GeoPoint(r.lat, r.lon), uniffi.aether_core.CoordFormat.MGRS)
@@ -761,7 +592,7 @@ private fun chatBodyText(m: StoredMessage): String = when (m.kind) {
 
 /** A dropped key card in the conversation: codename, operator, fingerprint, and a pin action. */
 @Composable
-private fun DropCard(node: AetherNode, m: StoredMessage, fmt: SimpleDateFormat) {
+internal fun DropCard(node: AetherNode, m: StoredMessage, fmt: SimpleDateFormat) {
     val drop = remember(m.body) { runCatching { decodeKeyDrop(m.body) }.getOrNull() } ?: return
     val keyHex = remember(drop) { drop.publicKey.toHex() }
     val fp = remember(drop) { runCatching { fingerprint(drop.publicKey) }.getOrDefault("") }
@@ -829,7 +660,7 @@ private fun DropCard(node: AetherNode, m: StoredMessage, fmt: SimpleDateFormat) 
 
 /** Composer: pick whose key to drop and give it a codename. */
 @Composable
-private fun DropDialog(node: AetherNode, convo: String, onDismiss: () -> Unit) {
+internal fun DropDialog(node: AetherNode, convo: String, onDismiss: () -> Unit) {
     val contacts by node.contacts.collectAsState()
     var codename by rememberSaveable { mutableStateOf(suggestCodename()) }
     var subject by rememberSaveable { mutableStateOf<String?>(null) } // null = my key

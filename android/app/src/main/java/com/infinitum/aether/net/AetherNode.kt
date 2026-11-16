@@ -14,7 +14,12 @@ import com.infinitum.aether.data.Profile
 import com.infinitum.aether.data.ScopeKind
 import com.infinitum.aether.data.Store
 import com.infinitum.aether.data.StoredMessage
+import com.infinitum.aether.data.ChatGroup
+import com.infinitum.aether.data.ChatStore
 import com.infinitum.aether.data.convo
+import com.infinitum.aether.data.groupConvo
+import com.infinitum.aether.data.isGroupConvo
+import com.infinitum.aether.data.timerLabel
 import com.infinitum.aether.data.convoKey
 import com.infinitum.aether.data.hexToBytes
 import com.infinitum.aether.data.randomId
@@ -22,7 +27,11 @@ import com.infinitum.aether.data.toHex
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -30,6 +39,11 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import uniffi.aether_core.ChatMessage
+import uniffi.aether_core.SocialEvent
+import uniffi.aether_core.SocialKind
+import uniffi.aether_core.decodeSocial
+import uniffi.aether_core.encodeSocial
+import uniffi.aether_core.socialEvent
 import uniffi.aether_core.EideticMessage
 import uniffi.aether_core.FieldMessage
 import uniffi.aether_core.PositionKind
@@ -167,7 +181,9 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     val burnCodeSet: StateFlow<Boolean> = _burnCodeSet.asStateFlow()
 
     fun start() {
-        val (c, m) = store.loadLog()
+        val replay = store.loadLogFull()
+        val c = replay.contacts
+        val m = replay.messages
         val (bundles, hash) = store.loadNumbersLog()
         _bundles.value = bundles
         burnHash = hash
@@ -179,7 +195,12 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             live += b; allContacts.putAll(bc); allMessages += bm
         }
         _contacts.value = allContacts
-        _messages.value = allMessages.sortedBy { it.sentAtMs }
+        val now = System.currentTimeMillis()
+        val kept = allMessages.filter { !it.expired(now) }
+        _messages.value = kept.sortedBy { it.sentAtMs }
+        // Expired messages leave the disk at once; a log full of superseded edits is folded too.
+        if (kept.size != allMessages.size || replay.superseded > 200) scheduleCompact()
+        scope.launch { while (isActive) { delay(PURGE_EVERY_MS); purgeExpired() } }
         // Rebuild the map picture and the field and eidetic inboxes from received history.
         for (msg in _messages.value) {
             if (msg.outgoing) continue
@@ -386,6 +407,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             _contacts.update { it + (convo to c) }
         }
         setState(convo, LinkState.ONLINE)
+        flushPending(convo)
         _events.value = "Secure session with ${link.peerName}" + (local.id?.let { " via ${formatNumber(numberOf(it))}" } ?: "")
         try {
             while (true) {
@@ -410,6 +432,8 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                         record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id, kind = StoredMessage.KIND_EIDETIC))
                         _eideticInbox.update { (it + (convo to e)).takeLast(500) }
                     }.onFailure { Log.w(TAG, "ignored malformed eidetic message") }
+                    MessageKind.SOCIAL -> onSocial(local, key, convo, msg)
+                    MessageKind.RECEIPT -> onReceipt(local, key, convo, msg.body)
                     else -> Unit
                 }
             }
@@ -417,6 +441,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             Log.i(TAG, "link ended: ${e.message}")
         } finally {
             links.remove(convo)?.let { if (it.link === link) setState(convo, LinkState.OFFLINE) else links[convo] = it }
+            clearTyping(key)
             link.close()
         }
         return Outcome.DONE
@@ -474,18 +499,8 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     /** Conversations with a live session, for "share to" pickers. */
     fun onlineConvos(): List<String> = links.keys.toList()
 
-    suspend fun send(convo: String, text: String): Boolean = withContext(Dispatchers.IO) {
-        val live = links[convo] ?: return@withContext false
-        val now = System.currentTimeMillis()
-        try {
-            live.link.send(ChatMessage(MessageKind.TEXT, now.toULong(), text))
-            record(StoredMessage(live.link.remoteKey.toHex(), true, now, text, via = live.local.id))
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "send failed", e)
-            false
-        }
-    }
+    /** Sends [text] to [convo] as a Talk message (a social Message with an id). */
+    suspend fun send(convo: String, text: String): Boolean = sendText(convo, text).isSuccess
 
     /**
      * Drops a key card into [convo] under [codename]: the identity this conversation runs as when
@@ -549,6 +564,395 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         scope.launch { dial(local, peer.host, peer.port, expectKey = c.keyHex) }
     }
 
+    // ---- ÆTHER Talk™ messenger (social events) -----------------------------------------
+    //
+    // Every Talk feature travels as a core SocialEvent inside the encrypted session
+    // (MessageKind.SOCIAL). Groups are fanned out pairwise: the same event is encrypted to each
+    // member over that member's own session, and queued for members who are offline.
+    // Nothing here logs message text.
+
+    /** Chat settings (pin, mute, archive, timer, read marker), groups and the group outbox. */
+    val chats = ChatStore(store)
+    private val msgLock = Any()
+    private val _typing = MutableStateFlow<Map<String, Map<String, Long>>>(emptyMap())
+    /** convo → (typing sender's key → typing until, ms). Group chats are keyed by their group convo. */
+    val typing: StateFlow<Map<String, Map<String, Long>>> = _typing.asStateFlow()
+    private val _incomingFiles = MutableSharedFlow<Pair<String, SocialEvent>>(extraBufferCapacity = 1024)
+    /**
+     * Received FileOffer / FileChunk events, untouched, as (pairwise convo → event); the event's
+     * `groupId` names the group when it was sent to one. For the media code to consume.
+     */
+    val incomingFiles: SharedFlow<Pair<String, SocialEvent>> = _incomingFiles.asSharedFlow()
+    private val lastReadSent = ConcurrentHashMap<String, String>()
+    private val lastTypingSent = ConcurrentHashMap<String, Long>()
+    @Volatile private var compactPending = false
+
+    private fun pairScope(convo: String): Pair<String?, String> =
+        if (convo.startsWith("b:")) convo.split(":", limit = 3).let { it[1] to it[2] } else null to convo
+
+    fun groupOf(convo: String): ChatGroup? = if (isGroupConvo(convo)) chats.groups.value[convo.removePrefix("g:")] else null
+
+    /** This device's own identity key (hex) in [convo]: the real identity's, or the burner's it runs under. */
+    fun ownKeyFor(convo: String): String {
+        val via = groupOf(convo)?.via ?: if (isGroupConvo(convo)) null else pairScope(convo).first
+        return localFor(via)?.keyHex ?: main.keyHex
+    }
+
+    /** Display name for [key] in the scope [via]: "You", a contact's name, or a short key. */
+    fun nameFor(via: String?, key: String): String = when {
+        key == (localFor(via)?.keyHex ?: main.keyHex) -> "You"
+        else -> _contacts.value[convoKey(via, key)]?.let { it.codename ?: it.name } ?: ("Operator " + key.take(8))
+    }
+
+    fun isOnline(convo: String) = links.containsKey(convo)
+
+    /**
+     * Sends a social event to [convo] (a contact, or a group: fanned out to every member, queued
+     * for those offline), then applies its effect here (records a Message, applies an Edit, …).
+     * FileOffer / FileChunk are only sent. Typing and Read are never queued.
+     */
+    suspend fun sendSocial(convo: String, event: SocialEvent): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val now = System.currentTimeMillis()
+            val g = groupOf(convo)
+            if (g != null) {
+                check(!g.left) { "You are no longer in this group" }
+                val e = event.copy(groupId = g.id)
+                val body = encodeSocial(e)
+                fanOut(g, g.members, body, now, queue = e.kind != SocialKind.TYPING && e.kind != SocialKind.READ)
+                applyOwn(convo, e, now)
+            } else {
+                check(!isGroupConvo(convo)) { "Unknown group" }
+                val live = links[convo] ?: error("Peer is offline")
+                val body = encodeSocial(event)
+                live.link.send(ChatMessage(MessageKind.SOCIAL, now.toULong(), body))
+                applyOwn(convo, event, now)
+            }
+        }.onFailure { Log.w(TAG, "send social ${event.kind} failed: ${it.javaClass.simpleName}") }
+    }
+
+    private fun fanOut(g: ChatGroup, targets: Collection<String>, body: String, now: Long, queue: Boolean) {
+        val me = localFor(g.via)?.keyHex ?: return
+        for (m in targets.distinct()) {
+            if (m == me) continue
+            val c = convoKey(g.via, m)
+            val live = links[c]
+            val sent = live != null && runCatching { live.link.send(ChatMessage(MessageKind.SOCIAL, now.toULong(), body)) }.isSuccess
+            if (!sent && queue) chats.enqueue(c, body, now)
+        }
+    }
+
+    /** Sends queued group events to [convo]'s peer once its link is up. */
+    private fun flushPending(convo: String) {
+        val live = links[convo] ?: return
+        for (p in chats.pendingFor(convo)) {
+            if (runCatching { live.link.send(ChatMessage(MessageKind.SOCIAL, p.sentAtMs.toULong(), p.body)) }.isFailure) return
+            chats.done(p.qid)
+        }
+    }
+
+    /** Local effect of an event this device sent. */
+    private fun applyOwn(convo: String, e: SocialEvent, now: Long) {
+        val g = groupOf(convo)
+        val (pairVia, peer) = if (g == null) pairScope(convo) else g.via to ownKeyFor(convo)
+        val via = g?.via ?: pairVia
+        when (e.kind) {
+            SocialKind.MESSAGE -> record(
+                StoredMessage(
+                    peer, true, now, e.text, via = via, id = e.id, replyTo = e.replyTo.ifEmpty { null },
+                    forwarded = e.forwarded, expiresAt = expiry(now, e.expiresS), groupId = g?.id,
+                    fileId = e.target.ifEmpty { null },
+                ),
+            )
+            SocialKind.EDIT -> mutate(convo, e.target) { if (it.outgoing && !it.deleted) it.copy(body = e.text, edited = true) else it }
+            SocialKind.DELETE -> mutate(convo, e.target) { if (it.outgoing) erased(it) else it }?.also { scheduleCompact() }
+            SocialKind.REACT -> mutate(convo, e.target) { react(it, e.text, ownKeyFor(convo), remove = e.flag) }
+            SocialKind.TIMER -> {
+                chats.update(convo) { it.copy(timerS = e.expiresS.toInt()) }
+                system(convo, via, peer, now, "You set disappearing messages to ${timerLabel(e.expiresS.toInt()).lowercase()}")
+            }
+            else -> Unit
+        }
+    }
+
+    private fun expiry(now: Long, s: UInt) = if (s == 0u) 0L else now + s.toLong() * 1000
+
+    private fun erased(m: StoredMessage) = m.copy(body = "", deleted = true, reactions = emptyMap(), replyTo = null, edited = false, fileId = null)
+
+    private fun react(m: StoredMessage, emoji: String, who: String, remove: Boolean): StoredMessage {
+        if (m.deleted) return m
+        val set = m.reactions[emoji].orEmpty()
+        val next = if (remove) set - who else set + who
+        return m.copy(reactions = (m.reactions - emoji).let { if (next.isEmpty()) it else it + (emoji to next) })
+    }
+
+    /** Adds a system line ("X set disappearing messages to 1 hour") to [convo]. */
+    private fun system(convo: String, via: String?, peer: String, now: Long, text: String) {
+        val g = groupOf(convo)
+        record(StoredMessage(peer, false, now, text, via = via, kind = StoredMessage.KIND_SYSTEM, id = randomId(), groupId = g?.id))
+    }
+
+    /** Replaces message [id] of [convo] with [f] of it, persisting the new state. */
+    private fun mutate(convo: String, id: String, f: (StoredMessage) -> StoredMessage): StoredMessage? = synchronized(msgLock) {
+        val cur = _messages.value.lastOrNull { it.id == id && it.convo == convo } ?: return null
+        val next = f(cur)
+        if (next == cur) return cur
+        if (!persistMessage(next)) return null
+        _messages.update { l -> l.map { if (it === cur) next else it } }
+        next
+    }
+
+    // ---- receiving --------------------------------------------------------------------
+
+    private fun onSocial(local: Local, key: String, pairConvo: String, msg: ChatMessage) {
+        val e = runCatching { decodeSocial(msg.body) }.getOrElse { Log.w(TAG, "ignored malformed social event"); return }
+        val now = System.currentTimeMillis()
+        val g = e.groupId.takeIf { it.isNotEmpty() }?.let { chats.groups.value[it] }
+        if (e.groupId.isNotEmpty() && e.kind == SocialKind.GROUP) { onGroupEvent(local, key, e, now); return }
+        // Group events from anyone who isn't a current member (or for a group we left) are ignored.
+        if (e.groupId.isNotEmpty() && (g == null || g.via != local.id || g.left || key !in g.members)) return
+        if (e.kind == SocialKind.FILE_OFFER || e.kind == SocialKind.FILE_CHUNK) { _incomingFiles.tryEmit(pairConvo to e); return }
+        if (g != null && e.kind == SocialKind.LEAVE) { onLeave(g, key, now); return }
+        val convo = g?.convo ?: pairConvo
+        when (e.kind) {
+            SocialKind.MESSAGE -> {
+                val dup = _messages.value.any { it.id == e.id && it.convo == convo }
+                if (!dup) {
+                    record(
+                        StoredMessage(
+                            key, false, msg.sentAtMs.toLong(), e.text, via = local.id, id = e.id,
+                            replyTo = e.replyTo.ifEmpty { null }, forwarded = e.forwarded,
+                            expiresAt = expiry(now, e.expiresS), groupId = g?.id, fileId = e.target.ifEmpty { null },
+                        ),
+                    )
+                }
+                sendReceipt(pairConvo, msg.sentAtMs)
+                setTypingState(convo, key, false)
+            }
+            SocialKind.EDIT -> mutate(convo, e.target) { if (!it.outgoing && it.peerKeyHex == key && !it.deleted) it.copy(body = e.text, edited = true) else it }
+            SocialKind.DELETE -> mutate(convo, e.target) { if (!it.outgoing && it.peerKeyHex == key) erased(it) else it }?.also { scheduleCompact() }
+            SocialKind.REACT -> mutate(convo, e.target) { react(it, e.text, key, remove = e.flag) }
+            SocialKind.READ -> markReadUpTo(convo, e.target)
+            SocialKind.TYPING -> setTypingState(convo, key, e.flag)
+            SocialKind.TIMER -> {
+                chats.update(convo) { it.copy(timerS = e.expiresS.toInt()) }
+                system(convo, local.id, key, now, "${nameFor(local.id, key)} set disappearing messages to ${timerLabel(e.expiresS.toInt()).lowercase()}")
+            }
+            else -> Unit
+        }
+    }
+
+    private fun sendReceipt(pairConvo: String, sentAtMs: ULong) {
+        val live = links[pairConvo] ?: return
+        runCatching { live.link.send(ChatMessage(MessageKind.RECEIPT, System.currentTimeMillis().toULong(), sentAtMs.toString())) }
+    }
+
+    /** A delivery receipt: the peer has the message we sent at the timestamp in [body]. */
+    private fun onReceipt(local: Local, key: String, pairConvo: String, body: String) {
+        val ts = body.trim().toLongOrNull() ?: return
+        val hits = _messages.value.filter { m ->
+            m.outgoing && m.sentAtMs == ts && m.id != null && m.delivery == StoredMessage.DELIVERY_SENT &&
+                (m.convo == pairConvo || (m.groupId != null && chats.groups.value[m.groupId]?.let { it.via == local.id && key in it.members } == true))
+        }
+        hits.forEach { h -> mutate(h.convo, h.id!!) { it.copy(delivery = maxOf(it.delivery, StoredMessage.DELIVERY_DELIVERED)) } }
+    }
+
+    /** The peer read everything up to our message [targetId]. */
+    private fun markReadUpTo(convo: String, targetId: String) {
+        val t = _messages.value.lastOrNull { it.convo == convo && it.id == targetId } ?: return
+        _messages.value.filter { it.convo == convo && it.outgoing && it.id != null && it.sentAtMs <= t.sentAtMs && it.delivery < StoredMessage.DELIVERY_READ }
+            .forEach { m -> mutate(convo, m.id!!) { it.copy(delivery = StoredMessage.DELIVERY_READ) } }
+    }
+
+    private fun setTypingState(convo: String, key: String, on: Boolean) = _typing.update { all ->
+        val cur = all[convo].orEmpty()
+        val next = if (on) cur + (key to System.currentTimeMillis() + TYPING_TTL_MS) else cur - key
+        if (next.isEmpty()) all - convo else all + (convo to next)
+    }
+
+    private fun clearTyping(key: String) = _typing.update { all ->
+        all.mapValues { it.value - key }.filterValues { it.isNotEmpty() }
+    }
+
+    // ---- actions (called from the chat screen) ------------------------------------------
+
+    /** Sends [text] as a new message, replying to [replyTo] when set; uses the chat's disappearing timer. */
+    suspend fun sendText(convo: String, text: String, replyTo: String? = null, forwarded: Boolean = false): Result<Unit> {
+        val e = socialEvent(SocialKind.MESSAGE).apply {
+            id = randomId()
+            this.text = text
+            this.replyTo = replyTo ?: ""
+            this.forwarded = forwarded
+            expiresS = chats.get(convo).timerS.toUInt()
+        }
+        val r = sendSocial(convo, e)
+        if (r.isSuccess) setTyping(convo, false)
+        return r
+    }
+
+    suspend fun editMessage(convo: String, id: String, text: String): Result<Unit> =
+        sendSocial(convo, socialEvent(SocialKind.EDIT).apply { target = id; this.text = text })
+
+    suspend fun deleteForEveryone(convo: String, id: String): Result<Unit> =
+        sendSocial(convo, socialEvent(SocialKind.DELETE).apply { target = id })
+
+    /** Removes [m] from this device only; its text leaves the disk at the next compaction (seconds). */
+    fun deleteForMe(m: StoredMessage) {
+        synchronized(msgLock) {
+            if (m.id != null) {
+                val gone = EventLog.goneJson(m.convo, m.id)
+                if (m.via == null) store.saveGone(m.convo, m.id) else if (locals.containsKey(m.via)) burnerStore.append(m.via, gone)
+            }
+            _messages.update { l -> l.filter { it !== m } }
+        }
+        scheduleCompact()
+    }
+
+    suspend fun toggleReaction(convo: String, id: String, emoji: String): Result<Unit> {
+        val m = _messages.value.lastOrNull { it.convo == convo && it.id == id } ?: return Result.failure(IllegalStateException("Message not found"))
+        val mine = ownKeyFor(convo) in m.reactions[emoji].orEmpty()
+        return sendSocial(convo, socialEvent(SocialKind.REACT).apply { target = id; text = emoji; flag = mine })
+    }
+
+    /** Forwards the text of [m] to [toConvo], marked "Forwarded". */
+    suspend fun forward(m: StoredMessage, toConvo: String): Result<Unit> = sendText(toConvo, m.body, forwarded = true)
+
+    suspend fun setTimer(convo: String, seconds: Int): Result<Unit> =
+        sendSocial(convo, socialEvent(SocialKind.TIMER).apply { expiresS = seconds.toUInt() })
+
+    /** Called while [convo] is on screen: marks it read here and tells the sender(s). */
+    suspend fun markRead(convo: String) {
+        val newest = _messages.value.lastOrNull { it.convo == convo && !it.outgoing && it.kind == null } ?: return
+        chats.update(convo) { if (newest.sentAtMs > it.lastReadMs) it.copy(lastReadMs = newest.sentAtMs) else it }
+        val id = newest.id ?: return
+        if (lastReadSent[convo] == id) return
+        if (groupOf(convo) == null && !isOnline(convo)) return
+        if (sendSocial(convo, socialEvent(SocialKind.READ).apply { target = id }).isSuccess) lastReadSent[convo] = id
+    }
+
+    /** Typing indicator: true is re-sent at most every few seconds; false is sent once. */
+    suspend fun setTyping(convo: String, on: Boolean) {
+        val now = System.currentTimeMillis()
+        val last = lastTypingSent[convo]
+        if (on && last != null && now - last < TYPING_RESEND_MS) return
+        if (!on && last == null) return
+        if (groupOf(convo)?.left == true || (groupOf(convo) == null && !isOnline(convo))) return
+        if (on) lastTypingSent[convo] = now else lastTypingSent.remove(convo)
+        sendSocial(convo, socialEvent(SocialKind.TYPING).apply { flag = on })
+    }
+
+    // ---- groups -------------------------------------------------------------------------
+
+    /** Creates a group of the real identity with [memberConvos] (contacts) and this device as admin. */
+    suspend fun createGroup(name: String, memberConvos: List<String>): Result<ChatGroup> = withContext(Dispatchers.IO) {
+        runCatching {
+            val keys = memberConvos.mapNotNull { _contacts.value[it] }.filter { it.via == null }.map { it.keyHex.lowercase() }
+            require(keys.isNotEmpty()) { "Pick at least one contact" }
+            val g = ChatGroup(randomId(), name.trim(), (listOf(main.keyHex) + keys).distinct(), main.keyHex, via = null)
+            sendGroupUpdate(g, g.members)
+            chats.saveGroup(g)
+            system(g.convo, null, main.keyHex, System.currentTimeMillis(), "You created the group “${g.name}”")
+            g
+        }
+    }
+
+    /** Admin only: renames [convo]'s group and/or sets its members (own key is always kept). */
+    suspend fun updateGroup(convo: String, name: String, members: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val g = groupOf(convo) ?: error("Unknown group")
+            val me = ownKeyFor(convo)
+            check(g.admin == me && !g.left) { "Only the group's creator can change it" }
+            val next = g.copy(name = name.trim(), members = (listOf(me) + members.map { it.lowercase() }).distinct())
+            sendGroupUpdate(next, g.members + next.members)
+            chats.saveGroup(next)
+            val now = System.currentTimeMillis()
+            if (next.name != g.name) system(convo, g.via, me, now, "You renamed the group to “${next.name}”")
+            (next.members - g.members.toSet()).forEach { system(convo, g.via, me, now, "You added ${nameFor(g.via, it)}") }
+            (g.members - next.members.toSet()).forEach { system(convo, g.via, me, now, "You removed ${nameFor(g.via, it)}") }
+        }
+    }
+
+    private fun sendGroupUpdate(g: ChatGroup, targets: Collection<String>) {
+        val e = socialEvent(SocialKind.GROUP).apply { groupId = g.id; text = g.name; members = g.members }
+        fanOut(g, targets, encodeSocial(e), System.currentTimeMillis(), queue = true)
+    }
+
+    suspend fun leaveGroup(convo: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val g = groupOf(convo) ?: error("Unknown group")
+            if (g.left) return@runCatching
+            val e = socialEvent(SocialKind.LEAVE).apply { groupId = g.id }
+            fanOut(g, g.members, encodeSocial(e), System.currentTimeMillis(), queue = true)
+            chats.saveGroup(g.copy(left = true))
+            system(convo, g.via, ownKeyFor(convo), System.currentTimeMillis(), "You left the group")
+        }
+    }
+
+    private fun onGroupEvent(local: Local, key: String, e: SocialEvent, now: Long) {
+        val me = local.keyHex
+        val members = e.members.map { it.lowercase() }
+        val g = chats.groups.value[e.groupId]
+        if (g == null) {
+            // A new group: only from a member, and only if it includes us. The sender is its admin.
+            if (key !in members || me !in members) return
+            val ng = ChatGroup(e.groupId, e.text, members, admin = key, via = local.id)
+            chats.saveGroup(ng)
+            system(ng.convo, local.id, key, now, "${nameFor(local.id, key)} added you to “${ng.name}”")
+            return
+        }
+        if (g.via != local.id || key != g.admin) return
+        if (me !in members) {
+            if (!g.left) {
+                chats.saveGroup(g.copy(members = members, left = true))
+                system(g.convo, g.via, key, now, "${nameFor(g.via, key)} removed you")
+            }
+            return
+        }
+        chats.saveGroup(g.copy(name = e.text, members = members, left = false))
+        val who = nameFor(g.via, key)
+        if (g.left) system(g.convo, g.via, key, now, "$who added you back")
+        if (g.name != e.text) system(g.convo, g.via, key, now, "$who renamed the group to “${e.text}”")
+        (members - g.members.toSet()).filter { it != me }.forEach { system(g.convo, g.via, key, now, "$who added ${nameFor(g.via, it)}") }
+        (g.members - members.toSet()).forEach { system(g.convo, g.via, key, now, "$who removed ${nameFor(g.via, it)}") }
+    }
+
+    private fun onLeave(g: ChatGroup, key: String, now: Long) {
+        chats.saveGroup(g.copy(members = g.members - key))
+        system(g.convo, g.via, key, now, "${nameFor(g.via, key)} left")
+    }
+
+    // ---- disappearing messages and compaction -------------------------------------------
+
+    private fun purgeExpired() {
+        val now = System.currentTimeMillis()
+        var changed = false
+        synchronized(msgLock) {
+            if (_messages.value.any { it.expired(now) }) {
+                _messages.update { l -> l.filter { !it.expired(now) } }
+                changed = true
+            }
+        }
+        if (changed) scheduleCompact()
+        _typing.update { all -> all.mapValues { (_, m) -> m.filterValues { it > now } }.filterValues { it.isNotEmpty() } }
+    }
+
+    /** Rewrites the message vaults from the live list shortly, so purged and deleted text leaves the disk. */
+    private fun scheduleCompact() {
+        if (compactPending) return
+        compactPending = true
+        scope.launch {
+            delay(1_500)
+            compactPending = false
+            runCatching {
+                synchronized(msgLock) {
+                    val all = _messages.value
+                    store.compactLog(all.filter { it.via == null })
+                    locals.keys.forEach { id -> burnerStore.compact(id, all.filter { it.via == id }) }
+                }
+            }.onFailure { Log.w(TAG, "compaction failed: ${it.javaClass.simpleName}") }
+        }
+    }
+
     // ---- burner numbers ----------------------------------------------------
 
     /** Slots in bundles that haven't expired. */
@@ -589,6 +993,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         _messages.update { l -> l.filter { it.via != id } }
         _burners.update { l -> l.filter { it.id != id } }
         burnerStore.burn(id)
+        chats.forgetVia(id)
         if (announce) _events.value = "Burned ${formatNumber(b.number)}"
     }
 
@@ -664,11 +1069,15 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         if (c.via == null) store.saveContact(c) else if (locals.containsKey(c.via)) burnerStore.append(c.via, EventLog.contactJson(c))
     }
 
-    private fun record(m: StoredMessage) {
+    private fun persistMessage(m: StoredMessage): Boolean {
         if (m.via == null) store.saveMessage(m)
         else if (locals.containsKey(m.via)) burnerStore.append(m.via, EventLog.messageJson(m))
-        else return
-        _messages.update { it + m }
+        else return false
+        return true
+    }
+
+    private fun record(m: StoredMessage) = synchronized(msgLock) {
+        if (persistMessage(m)) _messages.update { it + m }
     }
 
     private fun setState(convo: String, s: LinkState) = _linkStates.update { it + (convo to s) }
@@ -724,6 +1133,11 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         private const val SERVICE_TYPE = "_aether._tcp."
         private const val CONNECT_TIMEOUT_MS = 8_000
         private const val MAX_BURN_FAILURES = 3
+        private const val PURGE_EVERY_MS = 5_000L
+        private const val TYPING_TTL_MS = 6_000L
+        private const val TYPING_RESEND_MS = 3_000L
+        /** Quick reactions offered in the chat, in order. */
+        val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
         private const val TAG = "AetherNode"
 
         fun numberService(number: String) = "AETHER-N$number"

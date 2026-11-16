@@ -82,8 +82,42 @@ class BurnerStore(context: Context) {
             .put("bundleId", b.bundleId ?: JSONObject.NULL),
     )
 
+    @Synchronized
     fun append(id: String, o: JSONObject) {
         open(id).append(o.toString().toByteArray())
+    }
+
+    /**
+     * Rewrites a number's vault with its secret key and every non-message record as before, and
+     * exactly [keep] as its messages (expired, deleted and superseded text is gone from disk).
+     */
+    @Synchronized
+    fun compact(id: String, keep: List<StoredMessage>) {
+        val old = open(id)
+        val records = old.readAll()
+        if (records.isEmpty()) return
+        val others = records.drop(1).filter { !EventLog.isMessageRecord(JSONObject(it.decodeToString())) }
+        val tmp = File(dir, "$id.vault.tmp").apply { delete() }
+        val key = keys.scopedKey(alias(id), keyFile(id))
+        try {
+            val v = Vault.open(tmp.path, key)
+            try {
+                (listOf(records[0]) + others + keep.map { EventLog.messageJson(it).toString().toByteArray() }).forEach { v.append(it) }
+            } finally { v.destroy() }
+        } finally {
+            key.fill(0)
+            records[0].fill(0)
+        }
+        vaults.remove(id)?.destroy()
+        check(tmp.renameTo(vaultFile(id))) { "could not replace the number's vault" }
+    }
+
+    /** Replays a number's messages only (for counting superseded records). */
+    @Synchronized
+    fun replay(id: String): EventLog.Replay {
+        val records = open(id).readAll()
+        records.firstOrNull()?.fill(0)
+        return EventLog.replayFull(records.drop(1).map { JSONObject(it.decodeToString()) }, via = id)
     }
 
     fun burn(id: String) {
