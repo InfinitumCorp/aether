@@ -544,6 +544,30 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         return pinConvo
     }
 
+    /**
+     * This operator's real-identity key card as text, for a QR code shown face to face. It holds
+     * only the public key, a codename, the display name and local addresses: no phone number.
+     */
+    fun myKeyCard(): String = encodeKeyDrop(
+        KeyDrop(
+            profile.displayName.take(32).ifBlank { "Operator" },
+            profile.displayName.take(64).ifBlank { "Operator" },
+            main.identity.publicKey(),
+            localAddresses().take(4),
+        ),
+    )
+
+    /**
+     * Pins the operator on a scanned QR key card (real identity scope) and dials it. The session is
+     * accepted only if the peer proves the scanned key. Returns the conversation.
+     */
+    fun pinScanned(text: String): Result<String> = runCatching {
+        val d = decodeKeyDrop(text.trim())
+        val convo = pinDrop(d, "") ?: error("That is your own key card")
+        connectPinned(convo)
+        convo
+    }.onFailure { _events.value = it.message?.takeIf { m -> m.contains("own key") } ?: "Not an ÆTHER key card" }
+
     fun isLocalKey(keyHex: String) = keyHex == main.keyHex || locals.values.any { it.keyHex == keyHex }
 
     fun safetyNumber(convo: String): String? = links[convo]?.let { it.link.session.safetyNumber(it.local.identity) }

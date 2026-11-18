@@ -430,9 +430,11 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
     val states by node.linkStates.collectAsState()
     val messages by node.messages.collectAsState()
     var showConnect by remember { mutableStateOf(false) }
+    var showKeyCard by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         BrandBar(actions = {
+            BarAction("QR", "open_keycard") { showKeyCard = true }
             BarAction("Connect +", "open_connect") { showConnect = true }
         })
         LazyColumn(
@@ -471,6 +473,9 @@ private fun Home(node: AetherNode, onOpenChat: (String) -> Unit, onDiagnostics: 
 
     if (showConnect) ConnectDialog(onDismiss = { showConnect = false }) { host, port ->
         node.connect(host, port); showConnect = false
+    }
+    if (showKeyCard) KeyCardDialog(node, onDismiss = { showKeyCard = false }) { convo ->
+        showKeyCard = false; onOpenChat(convo)
     }
 }
 
