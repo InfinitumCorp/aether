@@ -62,6 +62,10 @@ import com.infinitum.aether.net.LinkState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import uniffi.aether_core.PeerCertStatus
+import androidx.compose.ui.graphics.Color
+import androidx.compose.runtime.DisposableEffect
+import com.infinitum.aether.net.PrecedenceAlerts
+import uniffi.aether_core.Precedence
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -89,7 +93,12 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
     val msgs = remember(all, convo, now / 5_000) { all.filter { it.convo == convo && !it.expired() } }
     val byId = remember(msgs) { msgs.filter { it.id != null }.associateBy { it.id!! } }
     val online = if (isGroup) group?.left == false else states[convo] == LinkState.ONLINE
-    val canSend = if (isGroup) group?.left == false else online
+    val ownKey = remember(convo, group?.via) { node.ownKeyFor(convo) }
+    // In a unit channel only admins post; everyone can still react, read and see the traffic.
+    val canSend = if (isGroup) group?.let { !it.left && (!it.channel || it.isAdmin(ownKey)) } == true else online
+    val isAdmin = group?.let { !it.left && it.isAdmin(ownKey) } ?: true
+    var precedence by remember(convo) { mutableStateOf(Precedence.ROUTINE) }
+    var confirmWipe by remember { mutableStateOf(false) }
     val peerCert = node.peerCerts.collectAsState().value[convo]
     val typers = typingMap[convo].orEmpty().filterValues { it > now }.keys
     var draft by rememberSaveable(convo) { mutableStateOf("") }
@@ -117,6 +126,11 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
     LaunchedEffect(newestIn?.id, newestIn?.sentAtMs, life, online) {
         if (newestIn != null && life.isAtLeast(Lifecycle.State.RESUMED)) node.markRead(convo)
     }
+    // Precedence notifications are skipped for the chat on screen.
+    DisposableEffect(convo, life) {
+        PrecedenceAlerts.openConvo = if (life.isAtLeast(Lifecycle.State.RESUMED)) convo else null
+        onDispose { if (PrecedenceAlerts.openConvo == convo) PrecedenceAlerts.openConvo = null }
+    }
     // Typing: "on" while the draft changes (the node throttles it), "off" after 4 s idle.
     LaunchedEffect(draft) {
         if (draft.isBlank() || editing != null) { node.setTyping(convo, false); return@LaunchedEffect }
@@ -133,7 +147,8 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                 if (online) BarAction("Drop key ↓", "chat_drop") { showDrop = true }
                 BarAction(if (contact?.verified == true) "Verified ✓" else "Verify", "chat_safety") { showSafety = true }
             }
-            if (canSend) BarAction("Timer", "chat_timer") { showTimer = true }
+            if (canSend && isAdmin) BarAction("Timer", "chat_timer") { showTimer = true }
+            if (isAdmin && (if (isGroup) group?.left == false else online)) BarAction("Wipe", "chat_wipe") { confirmWipe = true }
         })
         Column(Modifier.fillMaxWidth().padding(horizontal = GUTTER.dp, vertical = 18.dp)) {
             Text(group?.name ?: contact?.name ?: "Peer", style = MaterialTheme.typography.headlineMedium, color = Ink, modifier = Modifier.testTag("chat_title"))
@@ -150,6 +165,7 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                     Kicker(
                         when {
                             isGroup && group?.left == true -> "You are no longer in this group"
+                            isGroup && group?.channel == true -> "Unit channel · ${group.members.size} members · " + (if (isAdmin) "you post as admin" else "only admins post")
                             isGroup -> "Group · ${group?.members?.size ?: 0} members · end-to-end encrypted pairwise"
                             online -> "End-to-end encrypted · " + (if (contact?.pq == true) "post-quantum" else "classical") +
                                 when (peerCert?.status) {
@@ -179,6 +195,29 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
             }
         }
         Hairline()
+        // Pinned bar: the newest pinned message still on this device; tap to jump to it.
+        val pinned = remember(settings?.pins, byId) { settings?.pins.orEmpty().mapNotNull { byId[it] }.filter { !it.deleted } }
+        pinned.lastOrNull()?.let { p ->
+            Row(
+                Modifier.fillMaxWidth().background(Wash).clickable {
+                    val i = msgs.indexOf(p)
+                    if (i >= 0) scope.launch { list.animateScrollToItem(i) }
+                }.padding(horizontal = GUTTER.dp, vertical = 10.dp).testTag("chat_pinned_bar"),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.width(3.dp).height(32.dp).background(Ink))
+                Spacer(Modifier.size(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Kicker(if (pinned.size > 1) "Pinned · ${pinned.size}" else "Pinned", color = Ink)
+                    Text(previewOf(node, p), style = MaterialTheme.typography.bodySmall, color = Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (isAdmin && p.id != null) Text(
+                    "✕", color = Body, style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.clickable { scope.launch { node.togglePin(convo, p.id).onFailure { error = it.message } } }.padding(8.dp).testTag("chat_unpin"),
+                )
+            }
+            Hairline()
+        }
         LazyColumn(
             Modifier.weight(1f).fillMaxWidth(),
             state = list,
@@ -234,9 +273,10 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                     val caption = draft.trim()
                     scope.launch {
                         val out = prep().getOrElse { error = it.message ?: "Could not attach"; return@launch }
-                        node.sendFile(convo, out.offer, out.chunks, caption) { n ->
+                        node.sendFile(convo, out.offer, out.chunks, caption, onChunk = { n ->
                             media.markProgress(out.fileId, minOf(out.size, n.toLong() * 32_768L /* core SOCIAL_CHUNK_BYTES */))
-                        }.onSuccess {
+                        }, precedence = precedence).onSuccess {
+                            precedence = Precedence.ROUTINE
                             media.markSent(out.fileId)
                             if (caption.isNotEmpty()) draft = ""
                         }.onFailure {
@@ -251,12 +291,17 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                 )
                 Spacer(Modifier.size(8.dp))
             }
+            if (canSend && editing == null) {
+                PrecedenceChip(precedence) { precedence = Precedence.entries[(precedence.ordinal + 1) % Precedence.entries.size] }
+                Spacer(Modifier.size(8.dp))
+            }
             OutlinedTextField(
                 value = draft, onValueChange = { draft = it.take(8000); error = null },
                 placeholder = {
                     Text(
                         when {
                             canSend -> "Encrypted message"
+                            isGroup && group?.left == false -> "Only admins post in this channel"
                             isGroup -> "You left this group"
                             else -> "Peer offline"
                         },
@@ -275,8 +320,8 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
                 val ed = editing
                 val re = replyTo
                 scope.launch {
-                    val r = if (ed?.id != null) node.editMessage(convo, ed.id, text) else node.sendText(convo, text, re?.id)
-                    r.onSuccess { draft = ""; editing = null; replyTo = null }.onFailure { error = it.message ?: "Not sent" }
+                    val r = if (ed?.id != null) node.editMessage(convo, ed.id, text) else node.sendText(convo, text, re?.id, precedence = precedence)
+                    r.onSuccess { draft = ""; editing = null; replyTo = null; precedence = Precedence.ROUTINE }.onFailure { error = it.message ?: "Not sent" }
                 }
             }
         }
@@ -290,6 +335,9 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
     selected?.let { m ->
         MessageActions(
             m, canSend, mine,
+            pinned = m.id != null && m.id in settings?.pins.orEmpty(),
+            canPin = isAdmin && (if (isGroup) group?.left == false else online),
+            onPin = { m.id?.let { id -> scope.launch { node.togglePin(convo, id).onFailure { error = it.message } } } },
             onDismiss = { selected = null },
             onReply = { replyTo = m; editing = null },
             onEdit = { editing = m; replyTo = null; draft = m.body },
@@ -307,6 +355,47 @@ internal fun TalkChat(node: AetherNode, convo: String, onBack: () -> Unit, onOpe
     if (showInfo && group != null) GroupInfoDialog(node, convo, onDismiss = { showInfo = false })
     if (showDrop) DropDialog(node = node, convo = convo, onDismiss = { showDrop = false })
     if (showSafety) SafetyDialog(node, convo, onDismiss = { showSafety = false })
+    if (confirmWipe) AlertDialog(
+        onDismissRequest = { confirmWipe = false },
+        containerColor = Paper,
+        shape = MaterialTheme.shapes.small,
+        title = { Text("Wipe for everyone?", style = MaterialTheme.typography.titleLarge, color = Ink) },
+        text = {
+            Text(
+                "Every message, file and pin in “${group?.name ?: contact?.name ?: "this chat"}” is erased on this device and on every device in it" +
+                    (if (isGroup) " (members who are offline when they reconnect)" else "") + ". This cannot be undone.",
+                color = Body,
+            )
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { confirmWipe = false; scope.launch { node.wipeForEveryone(convo).onFailure { error = it.message ?: "Not wiped" } } },
+                modifier = Modifier.testTag("chat_wipe_confirm"),
+            ) { Text("Wipe", color = Alert) }
+        },
+        dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel", color = Body) } },
+    )
+}
+
+/** Precedence of the next message; tap to step Routine → Priority → Immediate → Flash. */
+@Composable
+private fun PrecedenceChip(p: Precedence, onTap: () -> Unit) {
+    val color = precedenceColor(p)
+    Text(
+        p.name.first().toString(),
+        style = MaterialTheme.typography.titleMedium,
+        color = if (p == Precedence.FLASH) Paper else color,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        modifier = Modifier.width(40.dp).border(1.dp, color).background(if (p == Precedence.FLASH) color else Paper)
+            .clickable(onClick = onTap).padding(vertical = 10.dp).testTag("chat_precedence_${p.name.lowercase()}"),
+    )
+}
+
+internal fun precedenceColor(p: Precedence): Color = when (p) {
+    Precedence.FLASH -> Alert
+    Precedence.IMMEDIATE -> Color(0xFFC45500)
+    Precedence.PRIORITY -> Color(0xFF8A5A00)
+    Precedence.ROUTINE -> Ink
 }
 
 private fun senderName(node: AetherNode, m: StoredMessage, via: String?) = if (m.outgoing) "You" else node.nameFor(via, m.peerKeyHex)
@@ -329,13 +418,25 @@ private fun Bubble(
     val fg = if (m.outgoing) Paper else Ink
     val sub = if (m.outgoing) Wash else Body
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (m.outgoing) Alignment.End else Alignment.Start) {
+        val urgent = m.precedence == Precedence.IMMEDIATE || m.precedence == Precedence.FLASH
         Column(
             Modifier.widthIn(max = 290.dp)
                 .background(if (m.outgoing) InkButton else Wash)
+                .then(if (urgent) Modifier.border(2.dp, precedenceColor(m.precedence)) else Modifier)
                 .combinedClickable(onClick = {}, onLongClick = onLongPress)
                 .padding(horizontal = 14.dp, vertical = 10.dp)
                 .testTag(if (m.outgoing) "msg_out" else "msg_in"),
         ) {
+            if (m.precedence != Precedence.ROUTINE && !m.deleted) {
+                val c = precedenceColor(m.precedence)
+                Text(
+                    m.precedence.name, style = MaterialTheme.typography.labelSmall,
+                    color = if (m.precedence == Precedence.FLASH) Paper else if (m.outgoing) Paper else c,
+                    modifier = Modifier.then(if (m.precedence == Precedence.FLASH) Modifier.background(c) else Modifier.border(1.dp, if (m.outgoing) Paper else c))
+                        .padding(horizontal = 6.dp, vertical = 1.dp).testTag("msg_precedence"),
+                )
+                Spacer(Modifier.height(6.dp))
+            }
             if (isGroup && !m.outgoing) {
                 Kicker(node.nameFor(via, m.peerKeyHex), color = Accent, modifier = Modifier.testTag("msg_sender"))
                 Spacer(Modifier.height(4.dp))
@@ -409,6 +510,9 @@ private fun MessageActions(
     m: StoredMessage,
     canSend: Boolean,
     mine: String,
+    pinned: Boolean,
+    canPin: Boolean,
+    onPin: () -> Unit,
     onDismiss: () -> Unit,
     onReply: () -> Unit,
     onEdit: () -> Unit,
@@ -447,6 +551,7 @@ private fun MessageActions(
                         if (isText) add(Triple("Copy", "action_copy") { clipboard.setText(AnnotatedString(m.body)) })
                         if (social && m.outgoing && isText && canSend) add(Triple("Edit", "action_edit", onEdit))
                         if (isText) add(Triple("Forward", "action_forward", onForward))
+                        if (social && canPin) add(Triple(if (pinned) "Unpin" else "Pin for everyone", "action_pin", onPin))
                         add(Triple("Delete…", "action_delete") { confirmDelete = true })
                     }
                     actions.forEach { (label, tag, act) ->
@@ -545,21 +650,24 @@ private fun GroupInfoDialog(node: AetherNode, convo: String, onDismiss: () -> Un
     val contacts by node.contacts.collectAsState()
     val g = groups[convo.removePrefix("g:")] ?: return
     val me = node.ownKeyFor(convo)
-    val admin = g.admin == me && !g.left
+    val admin = g.isAdmin(me) && !g.left
     var name by rememberSaveable(g.id) { mutableStateOf(g.name) }
     var members by remember(g.id, g.members) { mutableStateOf(g.members.filter { it != me }.toSet()) }
+    var admins by remember(g.id, g.admins) { mutableStateOf(g.admins.filter { it != me }.toSet()) }
+    var channel by remember(g.id, g.channel) { mutableStateOf(g.channel) }
     var confirmLeave by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     val candidates = remember(contacts, g) {
         (g.members.filter { it != me } + contacts.values.filter { it.via == g.via }.map { it.keyHex.lowercase() }).distinct()
     }
-    val changed = name.trim() != g.name || members != g.members.filter { it != me }.toSet()
+    val changed = name.trim() != g.name || members != g.members.filter { it != me }.toSet() ||
+        admins.intersect(members) != g.admins.filter { it != me }.toSet() || channel != g.channel
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = Paper,
         shape = MaterialTheme.shapes.small,
-        title = { Text(if (confirmLeave) "Leave “${g.name}”?" else "Group info", style = MaterialTheme.typography.titleLarge, color = Ink) },
+        title = { Text(if (confirmLeave) "Leave “${g.name}”?" else if (g.channel) "Unit channel" else "Group info", style = MaterialTheme.typography.titleLarge, color = Ink) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (confirmLeave) {
@@ -572,7 +680,19 @@ private fun GroupInfoDialog(node: AetherNode, convo: String, onDismiss: () -> Un
                     modifier = Modifier.fillMaxWidth().testTag("group_info_name"),
                 )
                 Spacer(Modifier.height(14.dp))
-                Kicker("Admin · " + node.nameFor(g.via, g.admin))
+                Row(
+                    Modifier.fillMaxWidth().then(if (admin) Modifier.clickable { channel = !channel } else Modifier).padding(vertical = 8.dp).testTag("group_channel"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusMark(channel)
+                    Spacer(Modifier.size(12.dp))
+                    Column {
+                        Text("Unit channel", color = Ink)
+                        Text("Only admins post. Everyone reads and reacts.", style = MaterialTheme.typography.bodySmall, color = Body)
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Kicker("Admins · " + g.admins.joinToString(", ") { node.nameFor(g.via, it) })
                 Spacer(Modifier.height(6.dp))
                 Kicker("Members · ${members.size + 1}")
                 Row(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -589,10 +709,17 @@ private fun GroupInfoDialog(node: AetherNode, convo: String, onDismiss: () -> Un
                         StatusMark(on)
                         Spacer(Modifier.size(12.dp))
                         Text(node.nameFor(g.via, k), color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                        if (k == g.admin) Kicker("Admin")
+                        val isAdm = k in admins
+                        if (admin && on) {
+                            Text(
+                                if (isAdm) "Admin ✓" else "Make admin", style = MaterialTheme.typography.labelLarge,
+                                color = if (isAdm) Ink else Accent,
+                                modifier = Modifier.clickable { admins = if (isAdm) admins - k else admins + k }.padding(6.dp).testTag("group_admin_$i"),
+                            )
+                        } else if (isAdm) Kicker("Admin")
                     }
                 }
-                if (!admin && !g.left) Hint("Only the group's creator can rename it or change its members.")
+                if (!admin && !g.left) Hint("Only admins rename it, change members and roles, pin and wipe.")
                 if (!g.left) {
                     Column(Modifier.fillMaxWidth().clickable { confirmLeave = true }.testTag("group_leave")) {
                         Hairline()
@@ -610,7 +737,7 @@ private fun GroupInfoDialog(node: AetherNode, convo: String, onDismiss: () -> Un
                 ) { Text("Leave", color = Alert) }
                 admin -> TextButton(
                     enabled = changed && name.isNotBlank() && members.isNotEmpty(),
-                    onClick = { scope.launch { node.updateGroup(convo, name, members.toList()).onSuccess { onDismiss() }.onFailure { error = it.message ?: "Not saved" } } },
+                    onClick = { scope.launch { node.updateGroup(convo, name, members.toList(), admins.intersect(members).toList(), channel).onSuccess { onDismiss() }.onFailure { error = it.message ?: "Not saved" } } },
                     modifier = Modifier.testTag("group_info_save"),
                 ) { Text("Save", color = if (changed && name.isNotBlank() && members.isNotEmpty()) Accent else RuleStrong) }
                 else -> TextButton(onClick = onDismiss) { Text("Close", color = Ink) }

@@ -32,24 +32,30 @@ data class ChatSettings(
     val timerS: Int = 0,
     /** Newest incoming message time (peer clock) the operator has seen; older ones are read. */
     val lastReadMs: Long = 0,
+    /** Message ids pinned at the top of the chat for everyone in it (oldest first). */
+    val pins: List<String> = emptyList(),
 )
 
 /**
- * A Talk group. [members] are identity keys (hex, lower case), including this device's own key
- * for [via]. [admin] is the creator: only the admin's updates (rename, members) are accepted.
+ * A Talk group or unit channel. [members] are identity keys (hex, lower case), including this
+ * device's own key for [via]. Only [admins] change the group (rename, members, roles), pin and
+ * wipe; in a [channel] only admins post.
  */
 data class ChatGroup(
     val id: String,
     val name: String,
     val members: List<String>,
-    val admin: String,
+    val admins: List<String>,
     /** Local identity the group runs under (burner id), or null for the real identity. */
     val via: String? = null,
     /** True once this device left or was removed; the chat stays readable but sends nothing. */
     val left: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
+    /** Unit channel: a broadcast group where only admins post. */
+    val channel: Boolean = false,
 ) {
     val convo: String get() = groupConvo(id)
+    fun isAdmin(key: String) = key in admins
 }
 
 /** An encoded social event waiting for a member's link to come up. */
@@ -157,21 +163,25 @@ class ChatStore(private val store: Store) {
     }
 
     private fun settingsJson(c: ChatSettings) = JSONObject().put("t", "set").put("c", c.convo).put("p", c.pinned)
-        .put("m", c.muted).put("a", c.archived).put("tm", c.timerS).put("lr", c.lastReadMs)
+        .put("m", c.muted).put("a", c.archived).put("tm", c.timerS).put("lr", c.lastReadMs).put("pn", JSONArray(c.pins))
 
     private fun settingsFrom(o: JSONObject) = ChatSettings(
         o.getString("c"), o.optBoolean("p"), o.optBoolean("m"), o.optBoolean("a"),
         o.optInt("tm").takeIf { it in SOCIAL_TIMERS } ?: 0, o.optLong("lr"),
+        o.optJSONArray("pn")?.let { a -> List(a.length()) { a.getString(it) } } ?: emptyList(),
     )
 
     private fun groupJson(g: ChatGroup) = JSONObject().put("t", "group").put("id", g.id).put("n", g.name)
-        .put("mb", JSONArray(g.members)).put("ad", g.admin).put("via", g.via ?: "").put("l", g.left).put("at", g.createdAt)
+        .put("mb", JSONArray(g.members)).put("ads", JSONArray(g.admins)).put("via", g.via ?: "").put("l", g.left)
+        .put("at", g.createdAt).put("ch", g.channel)
 
     private fun groupFrom(o: JSONObject): ChatGroup {
         val a = o.getJSONArray("mb")
+        // Records from before admin roles carry the single creator in "ad".
+        val admins = o.optJSONArray("ads")?.let { x -> List(x.length()) { x.getString(it) } } ?: listOfNotNull(o.optString("ad").ifEmpty { null })
         return ChatGroup(
-            o.getString("id"), o.getString("n"), List(a.length()) { a.getString(it) }, o.getString("ad"),
-            o.optString("via").ifEmpty { null }, o.optBoolean("l"), o.optLong("at"),
+            o.getString("id"), o.getString("n"), List(a.length()) { a.getString(it) }, admins,
+            o.optString("via").ifEmpty { null }, o.optBoolean("l"), o.optLong("at"), o.optBoolean("ch"),
         )
     }
 

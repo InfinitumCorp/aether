@@ -5,6 +5,7 @@ import com.infinitum.aether.security.KeyWrapper
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.aether_core.Identity
+import uniffi.aether_core.Precedence
 import uniffi.aether_core.Vault
 import java.io.File
 
@@ -59,6 +60,8 @@ data class StoredMessage(
     val groupId: String? = null,
     /** File id of an attached photo, file or voice message (social Message `target`), for the media code. */
     val fileId: String? = null,
+    /** Message precedence: [Precedence.ROUTINE] (default), PRIORITY, IMMEDIATE or FLASH. */
+    val precedence: Precedence = Precedence.ROUTINE,
 ) {
     fun expired(now: Long = System.currentTimeMillis()) = expiresAt in 1..now
 
@@ -122,6 +125,7 @@ object EventLog {
         if (m.delivery != StoredMessage.DELIVERY_SENT) o.put("dl", m.delivery)
         m.groupId?.let { o.put("g", it) }
         m.fileId?.let { o.put("f", it) }
+        if (m.precedence != Precedence.ROUTINE) o.put("pr", m.precedence.name)
         return o
     }
 
@@ -148,6 +152,7 @@ object EventLog {
             delivery = o.optInt("dl", StoredMessage.DELIVERY_SENT),
             groupId = o.optString("g").ifEmpty { null },
             fileId = o.optString("f").ifEmpty { null },
+            precedence = Precedence.entries.firstOrNull { it.name == o.optString("pr") } ?: Precedence.ROUTINE,
         )
     }
 

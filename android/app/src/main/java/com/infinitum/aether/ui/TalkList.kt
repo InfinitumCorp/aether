@@ -41,6 +41,7 @@ import com.infinitum.aether.data.convo
 import com.infinitum.aether.net.AetherNode
 import com.infinitum.aether.net.LinkState
 import kotlinx.coroutines.launch
+import uniffi.aether_core.Precedence
 import uniffi.aether_core.decodeKeyDrop
 
 /** One row of the Talk list: a contact conversation or a group. */
@@ -53,6 +54,9 @@ internal data class TalkEntry(
     val unread: Int,
     val settings: ChatSettings,
     val tag: String,
+    /** Highest precedence among unread messages (Routine when none are urgent). */
+    val urgency: Precedence = Precedence.ROUTINE,
+    val channel: Boolean = false,
 )
 
 /** Readable one-line preview of a message for lists and reply quotes. */
@@ -75,20 +79,27 @@ internal fun talkEntries(node: AetherNode): List<TalkEntry> {
     return remember(contacts, states, messages, settings, groups) {
         val now = System.currentTimeMillis()
         val byConvo = messages.filter { !it.expired(now) }.groupBy { it.convo }
-        fun unread(convo: String, s: ChatSettings) = byConvo[convo].orEmpty().count { !it.outgoing && it.kind == null && !it.drop && it.sentAtMs > s.lastReadMs }
+        fun unreadOf(convo: String, s: ChatSettings) = byConvo[convo].orEmpty().filter { !it.outgoing && it.kind == null && !it.drop && it.sentAtMs > s.lastReadMs }
+        fun unread(convo: String, s: ChatSettings) = unreadOf(convo, s).size
+        fun urgency(convo: String, s: ChatSettings) = unreadOf(convo, s).maxOfOrNull { it.precedence } ?: Precedence.ROUTINE
         val people = contacts.values.map { c ->
             val via = c.via?.let { "via " + AetherNode.formatNumber(node.numberOf(it)) + " · " } ?: ""
             val s = settings[c.convo] ?: ChatSettings(c.convo)
             TalkEntry(
                 c.convo, via + c.name + (c.codename?.let { "  · $it" } ?: "") + if (c.verified) "  ✓" else "",
                 states[c.convo] == LinkState.ONLINE, false, byConvo[c.convo]?.lastOrNull(), unread(c.convo, s), s, "contact_${c.name}",
+                urgency(c.convo, s),
             )
         }
         val gs = groups.values.map { g ->
             val s = settings[g.convo] ?: ChatSettings(g.convo)
-            TalkEntry(g.convo, g.name, !g.left, true, byConvo[g.convo]?.lastOrNull(), unread(g.convo, s), s, "group_${g.name}")
+            TalkEntry(g.convo, g.name, !g.left, true, byConvo[g.convo]?.lastOrNull(), unread(g.convo, s), s, "group_${g.name}", urgency(g.convo, s), g.channel)
         }
-        (people + gs).sortedWith(compareByDescending<TalkEntry> { it.settings.pinned }.thenByDescending { it.last?.sentAtMs ?: 0L })
+        // Unread Flash, then Immediate traffic first; then pinned chats; then the newest.
+        (people + gs).sortedWith(
+            compareByDescending<TalkEntry> { if (it.urgency >= Precedence.IMMEDIATE) it.urgency.ordinal else 0 }
+                .thenByDescending { it.settings.pinned }.thenByDescending { it.last?.sentAtMs ?: 0L },
+        )
     }
 }
 
@@ -182,7 +193,11 @@ private fun TalkRow(node: AetherNode, e: TalkEntry, onClick: () -> Unit, onLongC
             Column(Modifier.weight(1f).padding(start = 14.dp, end = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(e.title, style = MaterialTheme.typography.titleMedium, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
-                    if (e.isGroup) { Spacer(Modifier.size(8.dp)); Kicker("Group") }
+                    if (e.isGroup) { Spacer(Modifier.size(8.dp)); Kicker(if (e.channel) "Channel" else "Group") }
+                    if (e.urgency >= Precedence.IMMEDIATE) {
+                        Spacer(Modifier.size(8.dp))
+                        Kicker(e.urgency.name, color = precedenceColor(e.urgency), modifier = Modifier.testTag("${e.tag}_urgent"))
+                    }
                 }
                 Spacer(Modifier.height(2.dp))
                 Text(preview, style = MaterialTheme.typography.bodySmall, color = Body, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -195,14 +210,20 @@ private fun TalkRow(node: AetherNode, e: TalkEntry, onClick: () -> Unit, onLongC
                     // Muted chats keep a count but lose the accent marker.
                     Box(
                         Modifier.heightIn(min = 20.dp).widthIn(min = 20.dp)
-                            .then(if (e.settings.muted) Modifier.border(1.dp, RuleStrong) else Modifier.background(Accent))
+                            .then(
+                                when {
+                                    e.urgency >= Precedence.IMMEDIATE -> Modifier.background(precedenceColor(e.urgency))
+                                    e.settings.muted -> Modifier.border(1.dp, RuleStrong)
+                                    else -> Modifier.background(Accent)
+                                },
+                            )
                             .padding(horizontal = 6.dp).testTag("${e.tag}_unread"),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             if (e.unread > 99) "99+" else e.unread.toString(),
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (e.settings.muted) Body else Paper,
+                            color = if (e.settings.muted && e.urgency < Precedence.IMMEDIATE) Body else Paper,
                         )
                     }
                 } else if (flags.isEmpty()) {
@@ -247,6 +268,7 @@ internal fun NewGroupDialog(node: AetherNode, onDismiss: () -> Unit, onCreated: 
     val pickable = remember(contacts) { contacts.values.filter { it.via == null }.sortedBy { it.name.lowercase() } }
     var name by rememberSaveable { mutableStateOf("") }
     var picked by remember { mutableStateOf(setOf<String>()) }
+    var channel by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -255,7 +277,7 @@ internal fun NewGroupDialog(node: AetherNode, onDismiss: () -> Unit, onCreated: 
         onDismissRequest = onDismiss,
         containerColor = Paper,
         shape = MaterialTheme.shapes.small,
-        title = { Text("New group", style = MaterialTheme.typography.titleLarge, color = Ink) },
+        title = { Text(if (channel) "New unit channel" else "New group", style = MaterialTheme.typography.titleLarge, color = Ink) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
@@ -263,6 +285,17 @@ internal fun NewGroupDialog(node: AetherNode, onDismiss: () -> Unit, onCreated: 
                     label = { Text("Group name") }, shape = MaterialTheme.shapes.small, colors = fieldColors(),
                     modifier = Modifier.fillMaxWidth().testTag("group_name"),
                 )
+                Row(
+                    Modifier.fillMaxWidth().clickable { channel = !channel }.padding(vertical = 10.dp).testTag("group_new_channel"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusMark(channel)
+                    Spacer(Modifier.size(12.dp))
+                    Column {
+                        Text("Unit channel", color = Ink)
+                        Text("Broadcast: only admins post.", style = MaterialTheme.typography.bodySmall, color = Body)
+                    }
+                }
                 Spacer(Modifier.height(14.dp))
                 Kicker("Members · ${picked.size} picked")
                 if (pickable.isEmpty()) Hint("No contacts yet. Connect to teammates first.")
@@ -291,7 +324,7 @@ internal fun NewGroupDialog(node: AetherNode, onDismiss: () -> Unit, onCreated: 
                 onClick = {
                     busy = true
                     scope.launch {
-                        node.createGroup(name, picked.toList())
+                        node.createGroup(name, picked.toList(), channel)
                             .onSuccess { onCreated(it.convo) }
                             .onFailure { error = it.message ?: "Could not create the group"; busy = false }
                     }

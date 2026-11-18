@@ -57,6 +57,7 @@ import uniffi.aether_core.encodePosition
 import uniffi.aether_core.Identity
 import uniffi.aether_core.KeyDrop
 import uniffi.aether_core.MessageKind
+import uniffi.aether_core.Precedence
 import uniffi.aether_core.PeerCertStatus
 import uniffi.aether_core.PeerCertificate
 import uniffi.aether_core.burnCodeHash
@@ -578,6 +579,9 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     /** convo → (typing sender's key → typing until, ms). Group chats are keyed by their group convo. */
     val typing: StateFlow<Map<String, Map<String, Long>>> = _typing.asStateFlow()
     private val _incomingFiles = MutableSharedFlow<Pair<String, SocialEvent>>(extraBufferCapacity = 1024)
+    /** File ids whose messages were wiped (conversation, file id): the media store erases them. */
+    private val _wipedFiles = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 1024)
+    val wipedFiles: SharedFlow<Pair<String, String>> = _wipedFiles.asSharedFlow()
     /**
      * Received FileOffer / FileChunk events, untouched, as (pairwise convo → event); the event's
      * `groupId` names the group when it was sent to one. For the media code to consume.
@@ -661,7 +665,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                 StoredMessage(
                     peer, true, now, e.text, via = via, id = e.id, replyTo = e.replyTo.ifEmpty { null },
                     forwarded = e.forwarded, expiresAt = expiry(now, e.expiresS), groupId = g?.id,
-                    fileId = e.target.ifEmpty { null },
+                    fileId = e.target.ifEmpty { null }, precedence = e.precedence,
                 ),
             )
             SocialKind.EDIT -> mutate(convo, e.target) { if (it.outgoing && !it.deleted) it.copy(body = e.text, edited = true) else it }
@@ -671,9 +675,39 @@ class AetherNode(private val context: Context, private val store: Store, val pro
                 chats.update(convo) { it.copy(timerS = e.expiresS.toInt()) }
                 system(convo, via, peer, now, "You set disappearing messages to ${timerLabel(e.expiresS.toInt()).lowercase()}")
             }
+            SocialKind.PIN -> {
+                applyPin(convo, e.target, unpin = e.flag)
+                system(convo, via, peer, now, if (e.flag) "You unpinned a message" else "You pinned a message")
+            }
+            SocialKind.WIPE -> {
+                wipeLocal(convo)
+                system(convo, via, peer, now, "You wiped this chat on every device")
+            }
             else -> Unit
         }
     }
+
+    private fun applyPin(convo: String, id: String, unpin: Boolean) =
+        chats.update(convo) { s -> s.copy(pins = (s.pins - id).let { if (unpin) it else (it + id).takeLast(MAX_PINS) }) }
+
+    /** Erases every message of [convo] on this device (and their files and pins), leaving nothing on disk. */
+    private fun wipeLocal(convo: String) {
+        val gone = synchronized(msgLock) {
+            val mine = _messages.value.filter { it.convo == convo }
+            for (m in mine) if (m.id != null) {
+                val rec = EventLog.goneJson(convo, m.id)
+                if (m.via == null) store.saveGone(convo, m.id) else if (locals.containsKey(m.via)) burnerStore.append(m.via, rec)
+            }
+            _messages.update { l -> l.filter { it.convo != convo } }
+            mine
+        }
+        gone.mapNotNull { it.fileId }.forEach { _wipedFiles.tryEmit(convo to it) }
+        chats.update(convo) { it.copy(pins = emptyList()) }
+        clearTypingIn(convo)
+        scheduleCompact()
+    }
+
+    private fun clearTypingIn(convo: String) = _typing.update { it - convo }
 
     private fun expiry(now: Long, s: UInt) = if (s == 0u) 0L else now + s.toLong() * 1000
 
@@ -714,17 +748,22 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         if (e.kind == SocialKind.FILE_OFFER || e.kind == SocialKind.FILE_CHUNK) { _incomingFiles.tryEmit(pairConvo to e); return }
         if (g != null && e.kind == SocialKind.LEAVE) { onLeave(g, key, now); return }
         val convo = g?.convo ?: pairConvo
+        val admin = g == null || g.isAdmin(key)
         when (e.kind) {
             SocialKind.MESSAGE -> {
+                if (g != null && g.channel && !admin) return // only admins post in a unit channel
                 val dup = _messages.value.any { it.id == e.id && it.convo == convo }
                 if (!dup) {
-                    record(
-                        StoredMessage(
-                            key, false, msg.sentAtMs.toLong(), e.text, via = local.id, id = e.id,
-                            replyTo = e.replyTo.ifEmpty { null }, forwarded = e.forwarded,
-                            expiresAt = expiry(now, e.expiresS), groupId = g?.id, fileId = e.target.ifEmpty { null },
-                        ),
+                    val m = StoredMessage(
+                        key, false, msg.sentAtMs.toLong(), e.text, via = local.id, id = e.id,
+                        replyTo = e.replyTo.ifEmpty { null }, forwarded = e.forwarded,
+                        expiresAt = expiry(now, e.expiresS), groupId = g?.id, fileId = e.target.ifEmpty { null },
+                        precedence = e.precedence,
                     )
+                    record(m)
+                    if (m.precedence == Precedence.IMMEDIATE || m.precedence == Precedence.FLASH) {
+                        PrecedenceAlerts.post(context, convo, g?.name ?: nameFor(local.id, key), nameFor(local.id, key), m)
+                    }
                 }
                 sendReceipt(pairConvo, msg.sentAtMs)
                 setTypingState(convo, key, false)
@@ -737,6 +776,16 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             SocialKind.TIMER -> {
                 chats.update(convo) { it.copy(timerS = e.expiresS.toInt()) }
                 system(convo, local.id, key, now, "${nameFor(local.id, key)} set disappearing messages to ${timerLabel(e.expiresS.toInt()).lowercase()}")
+            }
+            SocialKind.PIN -> {
+                if (!admin) return
+                applyPin(convo, e.target, unpin = e.flag)
+                system(convo, local.id, key, now, "${nameFor(local.id, key)} ${if (e.flag) "unpinned" else "pinned"} a message")
+            }
+            SocialKind.WIPE -> {
+                if (!admin) return
+                wipeLocal(convo)
+                system(convo, local.id, key, now, "${nameFor(local.id, key)} wiped this chat on every device")
             }
             else -> Unit
         }
@@ -777,12 +826,19 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     // ---- actions (called from the chat screen) ------------------------------------------
 
     /** Sends [text] as a new message, replying to [replyTo] when set; uses the chat's disappearing timer. */
-    suspend fun sendText(convo: String, text: String, replyTo: String? = null, forwarded: Boolean = false): Result<Unit> {
+    suspend fun sendText(
+        convo: String,
+        text: String,
+        replyTo: String? = null,
+        forwarded: Boolean = false,
+        precedence: Precedence = Precedence.ROUTINE,
+    ): Result<Unit> {
         val e = socialEvent(SocialKind.MESSAGE).apply {
             id = randomId()
             this.text = text
             this.replyTo = replyTo ?: ""
             this.forwarded = forwarded
+            this.precedence = precedence
             expiresS = chats.get(convo).timerS.toUInt()
         }
         val r = sendSocial(convo, e)
@@ -800,6 +856,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         chunks: Sequence<SocialEvent>,
         caption: String = "",
         onChunk: (Int) -> Unit = {},
+        precedence: Precedence = Precedence.ROUTINE,
     ): Result<Unit> {
         sendSocial(convo, offer).onFailure { return Result.failure(it) }
         var n = 0
@@ -811,6 +868,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             id = randomId()
             text = caption
             target = offer.id
+            this.precedence = precedence
             expiresS = chats.get(convo).timerS.toUInt()
         }
         return sendSocial(convo, e)
@@ -843,6 +901,24 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     /** Forwards the text of [m] to [toConvo], marked "Forwarded". */
     suspend fun forward(m: StoredMessage, toConvo: String): Result<Unit> = sendText(toConvo, m.body, forwarded = true)
 
+    /** Admins (anyone in a direct chat): pins [id] at the top of [convo] for everyone, or unpins it. */
+    suspend fun togglePin(convo: String, id: String): Result<Unit> {
+        if (!isAdminIn(convo)) return Result.failure(IllegalStateException("Only an admin can pin here"))
+        val unpin = id in chats.get(convo).pins
+        return sendSocial(convo, socialEvent(SocialKind.PIN).apply { target = id; flag = unpin })
+    }
+
+    /** Admins (anyone in a direct chat): erases [convo] on every device in it. */
+    suspend fun wipeForEveryone(convo: String): Result<Unit> {
+        if (!isAdminIn(convo)) return Result.failure(IllegalStateException("Only an admin can wipe this chat"))
+        return sendSocial(convo, socialEvent(SocialKind.WIPE))
+    }
+
+    fun isAdminIn(convo: String): Boolean = groupOf(convo)?.let { !it.left && it.isAdmin(ownKeyFor(convo)) } ?: true
+
+    /** False in a unit channel for non-admins, and in a group this device left. */
+    fun canPostIn(convo: String): Boolean = groupOf(convo)?.let { !it.left && (!it.channel || it.isAdmin(ownKeyFor(convo))) } ?: true
+
     suspend fun setTimer(convo: String, seconds: Int): Result<Unit> =
         sendSocial(convo, socialEvent(SocialKind.TIMER).apply { expiresS = seconds.toUInt() })
 
@@ -870,36 +946,53 @@ class AetherNode(private val context: Context, private val store: Store, val pro
     // ---- groups -------------------------------------------------------------------------
 
     /** Creates a group of the real identity with [memberConvos] (contacts) and this device as admin. */
-    suspend fun createGroup(name: String, memberConvos: List<String>): Result<ChatGroup> = withContext(Dispatchers.IO) {
+    /** Creates a group (or, with [channel], a unit channel) of the real identity; this device is its admin. */
+    suspend fun createGroup(name: String, memberConvos: List<String>, channel: Boolean = false): Result<ChatGroup> = withContext(Dispatchers.IO) {
         runCatching {
             val keys = memberConvos.mapNotNull { _contacts.value[it] }.filter { it.via == null }.map { it.keyHex.lowercase() }
             require(keys.isNotEmpty()) { "Pick at least one contact" }
-            val g = ChatGroup(randomId(), name.trim(), (listOf(main.keyHex) + keys).distinct(), main.keyHex, via = null)
+            val g = ChatGroup(randomId(), name.trim(), (listOf(main.keyHex) + keys).distinct(), listOf(main.keyHex), via = null, channel = channel)
             sendGroupUpdate(g, g.members)
             chats.saveGroup(g)
-            system(g.convo, null, main.keyHex, System.currentTimeMillis(), "You created the group “${g.name}”")
+            system(g.convo, null, main.keyHex, System.currentTimeMillis(), "You created ${if (channel) "the unit channel" else "the group"} “${g.name}”")
             g
         }
     }
 
-    /** Admin only: renames [convo]'s group and/or sets its members (own key is always kept). */
-    suspend fun updateGroup(convo: String, name: String, members: List<String>): Result<Unit> = withContext(Dispatchers.IO) {
+    /**
+     * Admin only: renames [convo]'s group, sets its members and admins and switches channel mode.
+     * This device's own key always stays a member and an admin.
+     */
+    suspend fun updateGroup(
+        convo: String,
+        name: String,
+        members: List<String>,
+        admins: List<String>? = null,
+        channel: Boolean? = null,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val g = groupOf(convo) ?: error("Unknown group")
             val me = ownKeyFor(convo)
-            check(g.admin == me && !g.left) { "Only the group's creator can change it" }
-            val next = g.copy(name = name.trim(), members = (listOf(me) + members.map { it.lowercase() }).distinct())
+            check(g.isAdmin(me) && !g.left) { "Only an admin can change this group" }
+            val nm = (listOf(me) + members.map { it.lowercase() }).distinct()
+            val na = (listOf(me) + (admins ?: g.admins).map { it.lowercase() }).distinct().filter { it in nm }
+            val next = g.copy(name = name.trim(), members = nm, admins = na, channel = channel ?: g.channel)
             sendGroupUpdate(next, g.members + next.members)
             chats.saveGroup(next)
             val now = System.currentTimeMillis()
-            if (next.name != g.name) system(convo, g.via, me, now, "You renamed the group to “${next.name}”")
+            if (next.name != g.name) system(convo, g.via, me, now, "You renamed it to “${next.name}”")
             (next.members - g.members.toSet()).forEach { system(convo, g.via, me, now, "You added ${nameFor(g.via, it)}") }
             (g.members - next.members.toSet()).forEach { system(convo, g.via, me, now, "You removed ${nameFor(g.via, it)}") }
+            (next.admins - g.admins.toSet()).forEach { system(convo, g.via, me, now, "${nameFor(g.via, it)} is now an admin") }
+            (g.admins - next.admins.toSet()).filter { it in next.members }.forEach { system(convo, g.via, me, now, "${nameFor(g.via, it)} is no longer an admin") }
+            if (next.channel != g.channel) system(convo, g.via, me, now, if (next.channel) "Now a unit channel: only admins post" else "Everyone can post again")
         }
     }
 
     private fun sendGroupUpdate(g: ChatGroup, targets: Collection<String>) {
-        val e = socialEvent(SocialKind.GROUP).apply { groupId = g.id; text = g.name; members = g.members }
+        val e = socialEvent(SocialKind.GROUP).apply {
+            groupId = g.id; text = g.name; members = g.members; admins = g.admins; channel = g.channel
+        }
         fanOut(g, targets, encodeSocial(e), System.currentTimeMillis(), queue = true)
     }
 
@@ -919,14 +1012,16 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         val members = e.members.map { it.lowercase() }
         val g = chats.groups.value[e.groupId]
         if (g == null) {
-            // A new group: only from a member, and only if it includes us. The sender is its admin.
+            // A new group: only from a member, and only if it includes us.
             if (key !in members || me !in members) return
-            val ng = ChatGroup(e.groupId, e.text, members, admin = key, via = local.id)
+            val admins = e.admins.map { it.lowercase() }.filter { it in members }.ifEmpty { listOf(key) }
+            val ng = ChatGroup(e.groupId, e.text, members, admins, via = local.id, channel = e.channel)
             chats.saveGroup(ng)
-            system(ng.convo, local.id, key, now, "${nameFor(local.id, key)} added you to “${ng.name}”")
+            system(ng.convo, local.id, key, now, "${nameFor(local.id, key)} added you to ${if (ng.channel) "the unit channel" else "the group"} “${ng.name}”")
             return
         }
-        if (g.via != local.id || key != g.admin) return
+        if (g.via != local.id || !g.isAdmin(key)) return
+        val admins = e.admins.map { it.lowercase() }.filter { it in members }.ifEmpty { listOf(key) }
         if (me !in members) {
             if (!g.left) {
                 chats.saveGroup(g.copy(members = members, left = true))
@@ -934,16 +1029,21 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             }
             return
         }
-        chats.saveGroup(g.copy(name = e.text, members = members, left = false))
+        chats.saveGroup(g.copy(name = e.text, members = members, admins = admins, channel = e.channel, left = false))
         val who = nameFor(g.via, key)
         if (g.left) system(g.convo, g.via, key, now, "$who added you back")
-        if (g.name != e.text) system(g.convo, g.via, key, now, "$who renamed the group to “${e.text}”")
+        if (g.name != e.text) system(g.convo, g.via, key, now, "$who renamed it to “${e.text}”")
         (members - g.members.toSet()).filter { it != me }.forEach { system(g.convo, g.via, key, now, "$who added ${nameFor(g.via, it)}") }
         (g.members - members.toSet()).forEach { system(g.convo, g.via, key, now, "$who removed ${nameFor(g.via, it)}") }
+        (admins - g.admins.toSet()).forEach { system(g.convo, g.via, key, now, "${nameFor(g.via, it)} is now an admin") }
+        if (e.channel != g.channel) system(g.convo, g.via, key, now, if (e.channel) "Now a unit channel: only admins post" else "Everyone can post again")
     }
 
     private fun onLeave(g: ChatGroup, key: String, now: Long) {
-        chats.saveGroup(g.copy(members = g.members - key))
+        val members = g.members - key
+        // The last admin left: the first remaining member takes over (every device applies the same rule).
+        val admins = (g.admins - key).ifEmpty { listOfNotNull(members.firstOrNull()) }
+        chats.saveGroup(g.copy(members = members, admins = admins))
         system(g.convo, g.via, key, now, "${nameFor(g.via, key)} left")
     }
 
@@ -1161,6 +1261,7 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         private const val MAX_BURN_FAILURES = 3
         private const val PURGE_EVERY_MS = 5_000L
         private const val TYPING_TTL_MS = 6_000L
+        private const val MAX_PINS = 20
         private const val TYPING_RESEND_MS = 3_000L
         /** Quick reactions offered in the chat, in order. */
         val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")

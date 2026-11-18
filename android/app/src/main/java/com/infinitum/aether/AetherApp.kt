@@ -23,6 +23,8 @@ class AetherApp : Application() {
             it.start(); node = it; NodeService.start(this)
             // Photos, files and voice messages: hand every received offer/chunk to the media store.
             mediaScope.launch { it.incomingFiles.collect { (convo, e) -> runCatching { features.media.onIncoming(convo, e) } } }
+            // Wipe for everyone: erase the files of the wiped messages too.
+            mediaScope.launch { it.wipedFiles.collect { (_, id) -> runCatching { features.media.delete(id) } } }
         }
     }
 
