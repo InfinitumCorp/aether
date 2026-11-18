@@ -202,6 +202,59 @@ function passArrayJsValueToWasm0(array, malloc) {
     WASM_VECTOR_LEN = array.length;
     return ptr;
 }
+
+function _assertClass(instance, klass) {
+    if (!(instance instanceof klass)) {
+        throw new Error(`expected instance of ${klass.name}`);
+    }
+}
+/**
+ * @param {Social} event
+ * @returns {string}
+ */
+export function encodeSocial(event) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        _assertClass(event, Social);
+        const ret = wasm.encodeSocial(event.__wbg_ptr);
+        var ptr1 = ret[0];
+        var len1 = ret[1];
+        if (ret[3]) {
+            ptr1 = 0; len1 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * @param {string} body
+ * @returns {Social}
+ */
+export function decodeSocial(body) {
+    const ptr0 = passStringToWasm0(body, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.decodeSocial(ptr0, len0);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return Social.__wrap(ret[0]);
+}
+
+/**
+ * @param {number} size
+ * @returns {number}
+ */
+export function socialChunkCount(size) {
+    const ret = wasm.socialChunkCount(size);
+    return ret >>> 0;
+}
+
 /**
  * @param {string} body
  * @returns {Drop}
@@ -377,12 +430,6 @@ export function encodeKeyDrop(codename, name, public_key, addresses) {
         return getStringFromWasm0(ptr5, len5);
     } finally {
         wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
-    }
-}
-
-function _assertClass(instance, klass) {
-    if (!(instance instanceof klass)) {
-        throw new Error(`expected instance of ${klass.name}`);
     }
 }
 
@@ -949,7 +996,7 @@ export class Message {
         wasm.__wbg_message_free(ptr, 0);
     }
     /**
-     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field, 8 eidetic, 9 social.
      * @returns {number}
      */
     get kind() {
@@ -957,7 +1004,7 @@ export class Message {
         return ret;
     }
     /**
-     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field, 8 eidetic, 9 social.
      * @param {number} arg0
      */
     set kind(arg0) {
@@ -1255,6 +1302,380 @@ export class Session {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+}
+
+const SocialFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_social_free(ptr >>> 0, 1));
+/**
+ * A Talk event: message, edit, delete, reaction, read, typing, group, leave, file offer/chunk,
+ * timer, pin or wipe. `kind` is the wire code ("msg", "edit", "del", "react", "read", "typing",
+ * "group", "leave", "file", "chunk", "timer", "pin", "wipe"); `precedence` is "R", "P", "O" or "Z".
+ */
+export class Social {
+
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(Social.prototype);
+        obj.__wbg_ptr = ptr;
+        SocialFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SocialFinalization.unregister(this);
+        return ptr;
+    }
+
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_social_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get kind() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_kind(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set kind(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_label(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get id() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_id(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set id(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_profile(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get target() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_target(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set target(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_serial(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get groupId() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_groupId(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set groupId(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_devicePublicKey(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get text() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_text(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set text(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_certinfo_caKeyId(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get replyTo() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_replyTo(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set replyTo(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_replyTo(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {boolean}
+     */
+    get forwarded() {
+        const ret = wasm.__wbg_get_social_forwarded(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {boolean} arg0
+     */
+    set forwarded(arg0) {
+        wasm.__wbg_set_social_forwarded(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {boolean}
+     */
+    get flag() {
+        const ret = wasm.__wbg_get_social_flag(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {boolean} arg0
+     */
+    set flag(arg0) {
+        wasm.__wbg_set_social_flag(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {number}
+     */
+    get expiresS() {
+        const ret = wasm.__wbg_get_social_expiresS(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} arg0
+     */
+    set expiresS(arg0) {
+        wasm.__wbg_set_social_expiresS(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {string[]}
+     */
+    get members() {
+        const ret = wasm.__wbg_get_social_members(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {string[]} arg0
+     */
+    set members(arg0) {
+        const ptr0 = passArrayJsValueToWasm0(arg0, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_members(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string}
+     */
+    get mime() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_mime(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set mime(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_mime(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {number}
+     */
+    get size() {
+        const ret = wasm.__wbg_get_certinfo_notAfterMs(this.__wbg_ptr);
+        return ret;
+    }
+    /**
+     * @param {number} arg0
+     */
+    set size(arg0) {
+        wasm.__wbg_set_certinfo_notAfterMs(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {string}
+     */
+    get sha256() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_sha256(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set sha256(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_sha256(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {number}
+     */
+    get index() {
+        const ret = wasm.__wbg_get_social_index(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} arg0
+     */
+    set index(arg0) {
+        wasm.__wbg_set_social_index(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {number}
+     */
+    get total() {
+        const ret = wasm.__wbg_get_social_total(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @param {number} arg0
+     */
+    set total(arg0) {
+        wasm.__wbg_set_social_total(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @returns {string}
+     */
+    get precedence() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.__wbg_get_social_precedence(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @param {string} arg0
+     */
+    set precedence(arg0) {
+        const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_precedence(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {string[]}
+     */
+    get admins() {
+        const ret = wasm.__wbg_get_social_admins(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
+     * @param {string[]} arg0
+     */
+    set admins(arg0) {
+        const ptr0 = passArrayJsValueToWasm0(arg0, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.__wbg_set_social_admins(this.__wbg_ptr, ptr0, len0);
+    }
+    /**
+     * @returns {boolean}
+     */
+    get channel() {
+        const ret = wasm.__wbg_get_social_channel(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * @param {boolean} arg0
+     */
+    set channel(arg0) {
+        wasm.__wbg_set_social_channel(this.__wbg_ptr, arg0);
+    }
+    /**
+     * @param {string} kind
+     */
+    constructor(kind) {
+        const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.social_new(ptr0, len0);
+        this.__wbg_ptr = ret >>> 0;
+        SocialFinalization.register(this, this.__wbg_ptr, this);
+        return this;
     }
 }
 

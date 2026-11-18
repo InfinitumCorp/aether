@@ -46,8 +46,13 @@
         <p class="mono" id="me-bridge"></p>
       </div>
       <div class="section"><span>01</span> / ÆTHER Talk<sup class="tm">™</sup> · Conversations</div>
+      <div class="list-tools">
+        <input id="convo-search" type="search" placeholder="Search chats" aria-label="Search chats" autocomplete="off">
+        <button class="btn-secondary" id="new-group" type="button">New group +</button>
+        <button class="link" id="alerts" type="button" hidden>Enable Flash alerts</button>
+      </div>
       <ul id="convos" class="rows"></ul>
-      <p id="convos-empty" class="hint">No conversations yet. Use Connect + to reach a node by address or burner number.</p>
+      <p id="convos-empty" class="hint">No conversations yet. Use Connect + to reach a node by address or burner number, then build groups and unit channels from your contacts.</p>
     </section>
 
     <!-- Connect -->
@@ -72,21 +77,38 @@
           <h2 id="chat-name" class="h2-sm"></h2>
           <p class="kicker"><span id="chat-state"></span></p>
           <p class="kicker" id="chat-sub"></p>
+          <p class="typing" id="chat-typing" aria-live="polite"></p>
         </div>
         <div class="chat-actions">
+          <button class="link" id="chat-find" type="button">Search</button>
+          <select id="chat-timer" aria-label="Disappearing messages"></select>
+          <button class="link" id="chat-info" type="button">Members</button>
           <button class="link" id="chat-drop">Drop key ↓</button>
           <button class="link" id="chat-verify">Verify</button>
           <button class="link" id="chat-reconnect">Reconnect</button>
+          <button class="link danger" id="chat-wipe" type="button">Wipe for everyone</button>
         </div>
       </div>
+      <input id="chat-search" type="search" placeholder="Search this chat" aria-label="Search this chat" autocomplete="off" hidden>
+      <button id="pinned" class="pinned" type="button" hidden><span class="pin-count kicker"></span><span class="pin-text"></span></button>
       <div id="chat-verify-box" class="card" hidden>
         <p class="kicker">Safety number: compare with your teammate's screen</p>
         <p class="mono" id="chat-safety"></p>
         <button class="btn-secondary" id="chat-mark">Mark verified</button>
       </div>
       <ol id="msgs" class="msgs" aria-live="polite"></ol>
+      <div id="reply-bar" class="reply-bar" hidden><span class="rb-text"></span><button class="link" id="rb-close" type="button" aria-label="Cancel">✕</button></div>
+      <p id="send-note" class="hint send-note" hidden></p>
       <form id="f-send" class="send">
-        <input id="send-text" autocomplete="off" placeholder="Encrypted message" maxlength="4000" aria-label="Message">
+        <select id="send-prec" aria-label="Precedence" title="Precedence">
+          <option value="R">R · Routine</option>
+          <option value="P">P · Priority</option>
+          <option value="O">O · Immediate</option>
+          <option value="Z">Z · Flash</option>
+        </select>
+        <button class="btn-secondary" id="send-attach" type="button" title="Photo, file or voice note (up to 25 MB)" aria-label="Attach">📎</button>
+        <input id="send-file" type="file" hidden>
+        <input id="send-text" autocomplete="off" placeholder="Encrypted message" maxlength="8000" aria-label="Message">
         <button class="btn-primary" type="submit">Send</button>
       </form>
     </section>
@@ -126,6 +148,40 @@
       </div>
     </form>
   </dialog>
+
+  <dialog id="dlg-msg">
+    <form method="dialog" class="stack">
+      <p class="kicker" id="msg-when"></p>
+      <div id="msg-actions" class="msg-actions"></div>
+      <div class="row-actions"><button class="link" value="cancel">Close</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-fwd">
+    <form method="dialog" class="stack">
+      <h3>Forward to</h3>
+      <ul id="fwd-list" class="rows"></ul>
+      <div class="row-actions"><button class="link" value="cancel">Cancel</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-group">
+    <form method="dialog" class="stack">
+      <h3 id="grp-title">New group</h3>
+      <label>Name <input id="grp-name" maxlength="64" autocomplete="off" placeholder="e.g. 2nd Platoon"></label>
+      <label class="check"><input type="checkbox" id="grp-channel"> Unit channel: only admins post (broadcast)</label>
+      <p class="kicker">Members</p>
+      <ul id="grp-members" class="grp-members"></ul>
+      <p class="hint">Every event is encrypted to each member over their own session. Members who are offline get it when they next connect to you.</p>
+      <div class="row-actions">
+        <button class="link" value="cancel">Close</button>
+        <button class="link danger" id="grp-leave" type="button">Leave</button>
+        <button class="btn-primary" id="grp-save" type="button">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="alert" class="alert" role="alert" hidden></div>
 
   <script type="module" src="app.js"></script>
 </body>

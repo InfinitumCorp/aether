@@ -1,8 +1,8 @@
 // ÆTHER MIL Web: browser client. All cryptography runs in the ÆTHER Rust core (WebAssembly);
 // this file moves opaque byte buffers between the bridge, the core and the page.
 import init, * as core from './pkg/aether_web.js';
+import { KIND, TIMERS, PREC, REACTIONS, createTalk, fileKey, getFile, wipeFiles, isGroup, rid } from './talk.js';
 
-const KIND = { TEXT: 1, RECEIPT: 2, PING: 3, DROP: 4, BURN: 5 };
 const $ = (id) => document.getElementById(id);
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -25,6 +25,15 @@ let current = null;       // keyHex of open chat
 
 const msgsOf = (k) => store.get('aether.msgs.' + k, []);
 function addMsg(k, m) { const l = msgsOf(k); l.push(m); store.set('aether.msgs.' + k, l.slice(-500)); }
+const talk = createTalk({
+  core,
+  store,
+  me: () => me,
+  contacts: () => contacts,
+  links,
+  onChange: (c) => refresh(c),
+  onAlert: (c, m) => alertPrecedence(c, m),
+});
 function saveContacts() { store.set('aether.contacts', contacts); }
 const bridgeUrl = () => store.get('aether.bridge', DEFAULT_BRIDGE);
 
@@ -43,28 +52,70 @@ document.querySelectorAll('[data-nav]').forEach((b) => b.addEventListener('click
   show(b.dataset.nav);
 }));
 
+const title = (c) => {
+  const g = talk.groupOf(c);
+  if (g) return (g.channel ? '▣ ' : '◆ ') + g.name;
+  const ct = contacts[c];
+  return ct ? (ct.codename ? `${ct.name} · ${ct.codename}` : ct.name) : 'Unknown';
+};
+
+function preview(c, m) {
+  if (!m) return '';
+  if (m.sys) return m.body;
+  const who = isGroup(c) && !m.sys ? (m.o ? 'You: ' : talk.nameOf(m.from) + ': ') : m.o ? 'You: ' : '';
+  const prec = m.prec && m.prec !== 'R' ? `[${PREC[m.prec].toUpperCase()}] ` : '';
+  const body = m.deleted ? 'Message deleted' : m.drop ? 'Key Drop' : m.file ? '📎 ' + (m.body || 'Attachment') : m.body;
+  return (prec + who + body).slice(0, 90);
+}
+
 function renderHome() {
   $('me-name').textContent = me.name;
   $('me-fp').textContent = me.identity.fingerprint();
   $('me-bridge').textContent = bridgeUrl();
+  $('alerts').hidden = !('Notification' in window) || Notification.permission !== 'default';
+  const q = $('convo-search').value.trim().toLowerCase();
+  const rows = [...Object.keys(contacts), ...Object.values(talk.groups()).map((g) => 'g:' + g.id)].map((c) => {
+    const last = talk.msgsOf(c).at(-1);
+    const unread = talk.unread(c);
+    return { c, last, n: unread.length, flash: unread.some((m) => m.prec === 'Z'), urgent: unread.some((m) => m.prec === 'Z' || m.prec === 'O'), ts: last?.ts || talk.groupOf(c)?.ts || 0 };
+  }).filter((r) => !q || title(r.c).toLowerCase().includes(q) || preview(r.c, r.last).toLowerCase().includes(q))
+    .sort((a, b) => b.flash - a.flash || b.urgent - a.urgent || b.ts - a.ts);
   const ul = $('convos');
   ul.textContent = '';
-  const keys = Object.keys(contacts);
-  $('convos-empty').hidden = keys.length > 0;
-  for (const k of keys) {
-    const c = contacts[k];
-    const last = msgsOf(k).at(-1);
-    const state = links.get(k)?.state || 'offline';
+  $('convos-empty').hidden = rows.length > 0 || !!q;
+  for (const r of rows) {
+    const c = contacts[r.c];
+    const g = talk.groupOf(r.c);
     const li = document.createElement('li');
     const b = document.createElement('button');
-    b.innerHTML = '<span><span class="name"></span><br><span class="meta"></span></span><span class="meta state"></span>';
-    b.querySelector('.name').textContent = c.codename ? `${c.name} · ${c.codename}` : c.name;
-    b.querySelector('.meta').textContent = last ? (last.drop ? 'Key Drop' : last.body).slice(0, 80) : (c.number ? core.formatBurnerNumber(c.number) : c.addr || '');
-    b.querySelector('.state').textContent = (c.verified ? 'Verified · ' : '') + state;
-    b.addEventListener('click', () => openChat(k));
+    if (r.urgent) b.className = r.flash ? 'urgent flash' : 'urgent';
+    b.innerHTML = '<span><span class="name"></span><br><span class="meta"></span></span><span class="side"><span class="meta state"></span><span class="badge"></span></span>';
+    b.querySelector('.name').textContent = title(r.c);
+    b.querySelector('.meta').textContent = r.last ? preview(r.c, r.last) : g ? `${g.members.length} members` : (c.number ? core.formatBurnerNumber(c.number) : c.addr || '');
+    b.querySelector('.state').textContent = g ? (g.left ? 'left' : g.channel ? 'channel' : 'group') : (c.verified ? 'Verified · ' : '') + (links.get(r.c)?.state || 'offline');
+    const badge = b.querySelector('.badge');
+    badge.textContent = r.n ? String(r.n) : '';
+    badge.hidden = !r.n;
+    b.addEventListener('click', () => openChat(r.c));
     li.append(b);
     ul.append(li);
   }
+}
+$('convo-search').addEventListener('input', renderHome);
+$('alerts').addEventListener('click', async () => { try { await Notification.requestPermission(); } catch { /* */ } renderHome(); });
+
+/** Immediate and Flash traffic: a banner (and a system notification when allowed) unless that chat is open. */
+function alertPrecedence(c, m) {
+  if (current === c && document.visibilityState === 'visible') return;
+  const text = `${PREC[m.prec].toUpperCase()} · ${title(c)}: ${m.file ? 'Attachment' : m.body}`.slice(0, 140);
+  const a = $('alert');
+  a.textContent = text;
+  a.className = 'alert' + (m.prec === 'Z' ? ' flash' : '');
+  a.hidden = false;
+  a.onclick = () => { a.hidden = true; openChat(c); };
+  clearTimeout(alertPrecedence.t);
+  alertPrecedence.t = setTimeout(() => { a.hidden = true; }, m.prec === 'Z' ? 30000 : 12000);
+  try { if (Notification.permission === 'granted') new Notification('ÆTHER MIL · ' + PREC[m.prec], { body: text, tag: c, requireInteraction: m.prec === 'Z' }); } catch { /* */ }
 }
 
 // ---- connection -----------------------------------------------------------------------------
@@ -164,11 +215,14 @@ function adopt(k, fs, session, cert) {
       try { f = await fs.next(1e9); } catch { break; }
       let m;
       try { m = session.decrypt(f); } catch { fs.close(); break; } // authentication failure: drop the link
-      if (m.kind === KIND.TEXT) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body });
-      else if (m.kind === KIND.DROP) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body, drop: true });
+      if (talk.receive(k, m)) continue;
+      if (m.kind === KIND.TEXT) addMsg(k, { id: 'l' + rid(), local: true, o: false, ts: m.sentAtMs, from: k, body: m.body });
+      else if (m.kind === KIND.DROP) addMsg(k, { id: 'l' + rid(), local: true, o: false, ts: m.sentAtMs, from: k, body: m.body, drop: true });
+      else continue;
       refresh(k);
     }
   })();
+  talk.flush(k);
   refresh(k);
 }
 
@@ -177,7 +231,7 @@ function send(k, kind, body) {
   if (!l || l.state !== 'online') throw new Error('Not connected');
   const ts = Date.now();
   l.fs.send(l.session.encrypt(kind, ts, body));
-  addMsg(k, { o: true, ts, body, drop: kind === KIND.DROP });
+  addMsg(k, { id: 'l' + rid(), local: true, o: true, ts, from: talk.myKey(), body, drop: kind === KIND.DROP });
   refresh(k);
 }
 
@@ -187,36 +241,255 @@ function refresh(k) {
 }
 
 // ---- chat -----------------------------------------------------------------------------------
-function openChat(k) { current = k; $('chat-verify-box').hidden = true; show('chat'); renderChat(); }
+let replyTo = null;   // message id being replied to
+let editing = null;   // message id being edited
+let urls = [];        // object URLs of the attachments on screen
+let rendered = '';    // signature of what the chat shows, so the ticker only redraws on change
 
-function renderChat() {
-  const k = current;
-  const c = contacts[k];
-  const l = links.get(k);
+function openChat(k) {
+  current = k;
+  replyTo = editing = null;
+  $('chat-verify-box').hidden = true;
+  $('chat-search').value = '';
+  $('chat-search').hidden = true;
+  $('send-text').value = '';
+  show('chat');
+  renderChat(true);
+}
+
+function chatSignature(c) {
+  const l = talk.msgsOf(c);
+  return [l.length, l.at(-1)?.id, l.reduce((n, m) => n + (m.dl || 0) + (m.edited ? 1 : 0) + Object.keys(m.reactions || {}).length, 0), talk.settingsOf(c).pins.join()].join('|');
+}
+
+function renderChat(scroll = true) {
+  const c = current;
+  const g = talk.groupOf(c);
+  const ct = contacts[c];
+  const l = links.get(c);
   const online = l?.state === 'online';
-  $('chat-name').textContent = c.codename ? `${c.name} · ${c.codename}` : c.name;
-  const pq = online ? links.get(current).session.postQuantum() : !!c.pq;
-  const cert = online ? l.cert : null;
-  const certText = !cert ? '' : cert.status === 'valid' ? ` · certified ${cert.label}` : cert.status === 'absent' ? ' · uncertified' : ` · certificate ${cert.status}`;
-  $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (pq ? ' · post-quantum' : online ? ' · classical' : '') + certText + (c.verified ? ' · verified' : '');
-  $('chat-state').title = cert && cert.status !== 'valid' ? cert.reason : '';
-  $('chat-sub').textContent = [c.number ? 'via ' + core.formatBurnerNumber(c.number) : null, c.pinned ? 'pinned key' : null, c.addr].filter(Boolean).join(' · ');
-  $('chat-reconnect').hidden = online;
+  $('chat-name').textContent = title(c);
+  if (g) {
+    $('chat-state').textContent = `■ End-to-end encrypted · ${g.members.length} members` + (g.channel ? ' · unit channel' : '') + (g.left ? ' · you left' : '');
+    $('chat-state').title = '';
+    $('chat-sub').textContent = 'Admins: ' + g.admins.map(talk.nameOf).join(', ');
+  } else {
+    const pq = online ? l.session.postQuantum() : !!ct.pq;
+    const cert = online ? l.cert : null;
+    const certText = !cert ? '' : cert.status === 'valid' ? ` · certified ${cert.label}` : cert.status === 'absent' ? ' · uncertified' : ` · certificate ${cert.status}`;
+    $('chat-state').textContent = (online ? '■ End-to-end encrypted · online' : '□ Offline') + (pq ? ' · post-quantum' : online ? ' · classical' : '') + certText + (ct.verified ? ' · verified' : '');
+    $('chat-state').title = cert && cert.status !== 'valid' ? cert.reason : '';
+    $('chat-sub').textContent = [ct.number ? 'via ' + core.formatBurnerNumber(ct.number) : null, ct.pinned ? 'pinned key' : null, ct.addr].filter(Boolean).join(' · ');
+  }
+  $('chat-reconnect').hidden = !!g || online;
+  $('chat-drop').hidden = !!g;
   $('chat-drop').disabled = !online;
-  $('f-send').querySelector('button').disabled = !online;
+  $('chat-verify').hidden = !!g;
+  $('chat-info').hidden = !g;
+  $('chat-wipe').hidden = !talk.isAdmin(c) || (!g && !online);
+  const canPost = talk.canPost(c);
+  const s = talk.settingsOf(c);
+  $('chat-timer').value = String(s.timer);
+  $('chat-timer').disabled = !canPost || !talk.isAdmin(c);
+  renderTyping();
+
+  // Pinned bar: the newest pinned message still on this device.
+  const all = talk.msgsOf(c);
+  const byId = new Map(all.map((m) => [m.id, m]));
+  const pins = s.pins.map((id) => byId.get(id)).filter((m) => m && !m.deleted);
+  const bar = $('pinned');
+  bar.hidden = !pins.length;
+  if (pins.length) {
+    const p = pins.at(-1);
+    bar.querySelector('.pin-count').textContent = pins.length > 1 ? `Pinned · ${pins.length}` : 'Pinned';
+    bar.querySelector('.pin-text').textContent = preview(c, p);
+    bar.onclick = () => document.querySelector(`[data-id="${CSS.escape(p.id)}"]`)?.scrollIntoView({ block: 'center' });
+  }
+
+  // Composer.
+  $('f-send').hidden = !canPost;
+  $('send-note').hidden = canPost;
+  $('send-note').textContent = g?.left ? 'You are no longer in this group.' : g?.channel ? 'Unit channel: only admins post.' : 'Offline. Reconnect to send.';
+  const rb = $('reply-bar');
+  const target = byId.get(editing || replyTo);
+  rb.hidden = !target;
+  if (target) rb.querySelector('.rb-text').textContent = (editing ? 'Editing · ' : 'Reply to ' + talk.nameOf(target.from || (target.o ? talk.myKey() : c)) + ' · ') + preview(c, target).replace(/^You: /, '');
+
+  // Messages.
+  urls.forEach(URL.revokeObjectURL);
+  urls = [];
+  const q = $('chat-search').value.trim().toLowerCase();
   const ol = $('msgs');
   ol.textContent = '';
-  for (const m of msgsOf(k)) {
+  for (const m of all) {
+    if (q && !(m.body || '').toLowerCase().includes(q)) continue;
+    ol.append(bubble(c, g, m, byId));
+  }
+  if (!all.length) {
     const li = document.createElement('li');
-    li.className = 'msg' + (m.o ? ' out' : '') + (m.drop ? ' drop' : '');
-    if (m.drop) renderDrop(li, m);
-    else li.textContent = m.body;
-    const t = document.createElement('time');
-    t.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    li.append(t);
+    li.className = 'msg sys';
+    li.textContent = 'No messages. Everything here is end-to-end encrypted.';
     ol.append(li);
   }
-  ol.lastElementChild?.scrollIntoView({ block: 'end' });
+  rendered = chatSignature(c);
+  if (scroll && !q) ol.lastElementChild?.scrollIntoView({ block: 'end' });
+  if (document.visibilityState === 'visible') talk.markRead(c);
+}
+
+function renderTyping() {
+  const who = talk.typingIn(current);
+  $('chat-typing').textContent = who.length ? `${who.join(', ')} ${who.length > 1 ? 'are' : 'is'} typing…` : '';
+}
+
+function bubble(c, g, m, byId) {
+  const li = document.createElement('li');
+  if (m.sys) { li.className = 'msg sys'; li.textContent = m.body; return li; }
+  li.className = 'msg' + (m.o ? ' out' : '') + (m.drop ? ' drop' : '') + (m.prec && m.prec !== 'R' ? ' prec-' + m.prec : '') + (m.deleted ? ' deleted' : '');
+  li.dataset.id = m.id || '';
+  const add = (tag, cls, text) => { const e = document.createElement(tag); e.className = cls; e.textContent = text; li.append(e); return e; };
+  if (m.prec && m.prec !== 'R') add('span', 'prec', PREC[m.prec].toUpperCase());
+  if (g && !m.o) add('p', 'from', talk.nameOf(m.from));
+  if (m.fwd) add('p', 'fwd', '↪ Forwarded');
+  if (m.replyTo && !m.deleted) {
+    const r = byId.get(m.replyTo);
+    const bq = add('blockquote', 'reply', r ? `${r.o ? 'You' : talk.nameOf(r.from || c)}: ${preview(c, r).replace(/^.*?: /, '')}` : 'Original message unavailable');
+    if (r) bq.addEventListener('click', (e) => { e.stopPropagation(); document.querySelector(`[data-id="${CSS.escape(r.id)}"]`)?.scrollIntoView({ block: 'center' }); });
+  }
+  if (m.drop) {
+    const box = document.createElement('div');
+    renderDrop(box, m);
+    li.append(box);
+  } else if (m.deleted) {
+    add('p', 'body muted', 'Message deleted');
+  } else {
+    if (m.file) renderFile(li, c, m);
+    if (m.body) add('p', 'body', m.body);
+  }
+  const reacts = Object.entries(m.reactions || {});
+  if (reacts.length) {
+    const div = document.createElement('div');
+    div.className = 'reacts';
+    for (const [emoji, who] of reacts) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'react' + (who.includes(talk.myKey()) ? ' mine' : '');
+      b.textContent = `${emoji} ${who.length}`;
+      b.title = who.map(talk.nameOf).join(', ');
+      b.addEventListener('click', (e) => { e.stopPropagation(); act(() => talk.toggleReaction(c, m.id, emoji)); });
+      div.append(b);
+    }
+    li.append(div);
+  }
+  const t = document.createElement('time');
+  const ticks = m.o && !m.local ? [' · ✓ sent', ' · ✓✓ delivered', ' · ✓✓ read'][m.dl || 0] : '';
+  t.textContent = new Date(m.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + (m.edited ? ' · edited' : '') + (m.exp ? ' · ⏱ ' + untilText(m.exp) : '') + ticks;
+  if (m.dl === 2) t.className = 'read';
+  li.append(t);
+  li.addEventListener('click', (e) => { if (!e.target.closest('a, button, audio, video')) openMenu(c, m); });
+  return li;
+}
+
+function untilText(exp) {
+  const s = Math.max(0, Math.round((exp - Date.now()) / 1000));
+  return s < 60 ? s + 's' : s < 3600 ? Math.round(s / 60) + 'm' : s < 86400 ? Math.round(s / 3600) + 'h' : Math.round(s / 86400) + 'd';
+}
+
+function renderFile(li, c, m) {
+  const box = document.createElement('div');
+  box.className = 'file';
+  box.textContent = 'Attachment…';
+  li.append(box);
+  getFile(fileKey(c, m.o ? talk.myKey() : m.from, m.file)).then((f) => {
+    if (!f) { box.textContent = '📎 Attachment (not received)'; return; }
+    const url = URL.createObjectURL(f.blob);
+    urls.push(url);
+    box.textContent = '';
+    if (f.mime.startsWith('image/')) {
+      const img = document.createElement('img');
+      img.src = url;
+      img.alt = f.name;
+      box.append(img);
+    } else if (f.mime.startsWith('audio/')) {
+      const a = document.createElement('audio');
+      a.controls = true;
+      a.src = url;
+      box.append(a);
+    } else if (f.mime.startsWith('video/')) {
+      const v = document.createElement('video');
+      v.controls = true;
+      v.src = url;
+      box.append(v);
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = f.name;
+    a.textContent = `📎 ${f.name} · ${f.size < 1048576 ? Math.ceil(f.size / 1024) + ' KB' : (f.size / 1048576).toFixed(1) + ' MB'}`;
+    box.append(a);
+  });
+}
+
+function act(fn) {
+  try {
+    const r = fn();
+    if (r?.catch) r.catch((e) => alert(e.message));
+  } catch (e) { alert(e.message); }
+}
+
+/** The long-press menu of WhatsApp/Telegram: react, reply, copy, forward, edit, pin, delete. */
+function openMenu(c, m) {
+  if (m.sys) return;
+  const box = $('msg-actions');
+  box.textContent = '';
+  const canPost = talk.canPost(c);
+  const wire = !m.local && !m.deleted; // the message exists on the peer's device under this id
+  const btn = (label, fn, cls = 'btn-secondary') => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener('click', () => { $('dlg-msg').close(); act(fn); });
+    box.append(b);
+  };
+  if (wire && canPost) {
+    const row = document.createElement('div');
+    row.className = 'react-row';
+    for (const emoji of REACTIONS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'react';
+      b.textContent = emoji;
+      b.addEventListener('click', () => { $('dlg-msg').close(); act(() => talk.toggleReaction(c, m.id, emoji)); });
+      row.append(b);
+    }
+    box.append(row);
+  }
+  if (wire && canPost) btn('Reply', () => { replyTo = m.id; editing = null; renderChat(false); $('send-text').focus(); });
+  if (m.body && !m.deleted && !m.drop) btn('Copy', () => navigator.clipboard.writeText(m.body));
+  if (m.body && !m.deleted && !m.drop) btn('Forward', () => openForward(m));
+  if (wire && m.o && m.body && !m.file && canPost) btn('Edit', () => { editing = m.id; replyTo = null; $('send-text').value = m.body; renderChat(false); $('send-text').focus(); });
+  if (wire && talk.isAdmin(c) && canPost) btn(talk.settingsOf(c).pins.includes(m.id) ? 'Unpin' : 'Pin for everyone', () => talk.togglePin(c, m.id));
+  btn('Delete for me', () => talk.deleteForMe(c, m.id));
+  if (wire && m.o && canPost) btn('Delete for everyone', () => { if (confirm('Delete this message on every device?')) talk.deleteForEveryone(c, m.id); });
+  $('msg-when').textContent = new Date(m.ts).toLocaleString() + (m.prec && m.prec !== 'R' ? ' · ' + PREC[m.prec] : '');
+  $('dlg-msg').showModal();
+}
+
+function openForward(m) {
+  const ul = $('fwd-list');
+  ul.textContent = '';
+  const targets = [...Object.keys(contacts), ...Object.values(talk.groups()).map((g) => 'g:' + g.id)].filter((c) => talk.canPost(c));
+  if (!targets.length) { alert('No chat to forward to: connect to a contact first.'); return; }
+  for (const c of targets) {
+    const li = document.createElement('li');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.innerHTML = '<span class="name"></span>';
+    b.querySelector('.name').textContent = title(c);
+    b.addEventListener('click', () => { $('dlg-fwd').close(); act(() => { talk.sendText(c, m.body, { forwarded: true }); openChat(c); }); });
+    li.append(b);
+    ul.append(li);
+  }
+  $('dlg-fwd').showModal();
 }
 
 function renderDrop(li, m) {
@@ -249,10 +522,104 @@ function renderDrop(li, m) {
 
 $('f-send').addEventListener('submit', (e) => {
   e.preventDefault();
-  const t = $('send-text').value.trim();
-  if (!t) return;
-  try { send(current, KIND.TEXT, t); $('send-text').value = ''; } catch (err) { alert(err.message); }
+  const text = $('send-text').value.trim();
+  if (!text) return;
+  const c = current;
+  try {
+    if (editing) talk.edit(c, editing, text);
+    else talk.sendText(c, text, { replyTo, precedence: $('send-prec').value });
+    $('send-text').value = '';
+    replyTo = editing = null;
+    $('send-prec').value = 'R';
+    renderChat();
+  } catch (err) { alert(err.message); }
 });
+$('send-text').addEventListener('input', () => { if ($('send-text').value.trim()) talk.setTyping(current, true); });
+$('send-text').addEventListener('blur', () => { if (current) talk.setTyping(current, false); });
+$('rb-close').addEventListener('click', () => { if (editing) $('send-text').value = ''; replyTo = editing = null; renderChat(false); });
+$('send-attach').addEventListener('click', () => $('send-file').click());
+$('send-file').addEventListener('change', async () => {
+  const f = $('send-file').files[0];
+  $('send-file').value = '';
+  if (!f) return;
+  const c = current;
+  $('send-note').hidden = false;
+  $('send-note').textContent = `Sending ${f.name}…`;
+  try {
+    await talk.sendFile(c, f, { caption: $('send-text').value.trim(), precedence: $('send-prec').value });
+    $('send-text').value = '';
+  } catch (err) { alert(err.message); }
+  if (current === c) renderChat();
+});
+for (const [v, label] of TIMERS) $('chat-timer').append(new Option('⏱ ' + label, String(v)));
+$('chat-timer').addEventListener('change', () => act(() => talk.setTimer(current, Number($('chat-timer').value))));
+$('chat-find').addEventListener('click', () => { const s = $('chat-search'); s.hidden = !s.hidden; s.value = ''; if (!s.hidden) s.focus(); renderChat(false); });
+$('chat-search').addEventListener('input', () => renderChat(false));
+$('chat-wipe').addEventListener('click', () => {
+  if (confirm(`Wipe “${title(current)}” on every device in it? Messages, files and pins are erased and cannot be recovered.`)) act(() => talk.wipeForEveryone(current));
+});
+
+// ---- groups and unit channels ----------------------------------------------------------------
+let groupEdit = null; // convo of the group being edited, or null to create one
+
+function openGroup(c) {
+  groupEdit = c;
+  const g = c ? talk.groupOf(c) : null;
+  const admin = !g || talk.isAdmin(c);
+  $('grp-title').textContent = g ? (g.channel ? 'Unit channel' : 'Group') : 'New group';
+  $('grp-name').value = g ? g.name : '';
+  $('grp-name').disabled = !admin;
+  $('grp-channel').checked = !!g?.channel;
+  $('grp-channel').disabled = !admin;
+  $('grp-save').hidden = !admin;
+  $('grp-leave').hidden = !g || g.left;
+  const keys = [...new Set([...(g ? g.members : []), ...Object.keys(contacts)])].filter((k) => k !== talk.myKey());
+  const ul = $('grp-members');
+  ul.textContent = '';
+  if (!keys.length) ul.innerHTML = '<li class="hint">No contacts yet. Connect to teammates first.</li>';
+  for (const k of keys) {
+    const li = document.createElement('li');
+    li.innerHTML = '<label class="check"><input type="checkbox" class="m"> <span></span></label><label class="check adm"><input type="checkbox" class="a"> admin</label>';
+    li.dataset.key = k;
+    li.querySelector('span').textContent = talk.nameOf(k);
+    li.querySelector('.m').checked = !!g?.members.includes(k);
+    li.querySelector('.a').checked = !!g?.admins.includes(k);
+    li.querySelectorAll('input').forEach((i) => { i.disabled = !admin; });
+    li.querySelector('.adm').hidden = !g;
+    ul.append(li);
+  }
+  $('dlg-group').showModal();
+}
+
+$('new-group').addEventListener('click', () => openGroup(null));
+$('chat-info').addEventListener('click', () => openGroup(current));
+$('grp-save').addEventListener('click', () => {
+  const name = $('grp-name').value.trim();
+  if (!name) { alert('Give the group a name.'); return; }
+  const rows = [...$('grp-members').querySelectorAll('li[data-key]')];
+  const members = rows.filter((r) => r.querySelector('.m').checked).map((r) => r.dataset.key);
+  const admins = rows.filter((r) => r.querySelector('.m').checked && r.querySelector('.a').checked).map((r) => r.dataset.key);
+  try {
+    if (groupEdit) talk.updateGroup(groupEdit, { name, members, admins, channel: $('grp-channel').checked });
+    else { const c = talk.createGroup(name, members, $('grp-channel').checked); $('dlg-group').close(); openChat(c); return; }
+    $('dlg-group').close();
+  } catch (e) { alert(e.message); }
+});
+$('grp-leave').addEventListener('click', () => {
+  if (!confirm('Leave this group? You stop receiving its messages.')) return;
+  talk.leaveGroup(groupEdit);
+  $('dlg-group').close();
+});
+
+// Disappearing messages, typing indicators and receipts: redraw only when something changed.
+setInterval(() => {
+  if (!me) return;
+  if (current && !$('v-chat').hidden) {
+    renderTyping();
+    if (chatSignature(current) !== rendered) renderChat(false);
+  } else if (!$('v-home').hidden) renderHome();
+}, 2000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && current && !$('v-chat').hidden) talk.markRead(current); });
 
 $('chat-verify').addEventListener('click', () => {
   const l = links.get(current);
@@ -389,6 +756,17 @@ function renderDiag() {
     f[f.length - 1] ^= 1;
     try { sr.decrypt(f); return false; } catch { return true; }
   });
+  check('ÆTHER Talk event round trip (precedence, groups, pins)', () => {
+    const e = new core.Social('msg');
+    e.id = 'diag-1'; e.text = 'a | b'; e.precedence = 'Z'; e.replyTo = 'diag-0';
+    const d = core.decodeSocial(core.encodeSocial(e));
+    const pin = new core.Social('pin');
+    pin.target = 'diag-1';
+    const p = core.decodeSocial(core.encodeSocial(pin));
+    let bad = false;
+    try { const r = new core.Social('react'); r.target = 'x'; r.text = 'ok'; core.encodeSocial(r); } catch { bad = true; }
+    return d.text === 'a | b' && d.precedence === 'Z' && d.replyTo === 'diag-0' && p.kind === 'pin' && bad;
+  });
   check('Burner number derivation', () => /^\d{10}$/.test(core.burnerNumber(me.identity.publicKey())));
   const ol = $('diag');
   ol.textContent = '';
@@ -405,7 +783,7 @@ $('wipe').addEventListener('click', () => {
   if (!confirm('Wipe this browser identity and every message stored here?')) return;
   links.forEach((l) => l.fs.close());
   store.wipe();
-  location.reload();
+  wipeFiles().finally(() => location.reload());
 });
 
 // ---- boot -----------------------------------------------------------------------------------

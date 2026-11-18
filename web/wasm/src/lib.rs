@@ -87,7 +87,7 @@ impl Handshake {
 /// A decrypted envelope.
 #[wasm_bindgen(getter_with_clone)]
 pub struct Message {
-    /// 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+    /// 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field, 8 eidetic, 9 social.
     pub kind: u8,
     #[wasm_bindgen(js_name = sentAtMs)]
     pub sent_at_ms: f64,
@@ -102,6 +102,10 @@ fn kind_from(k: u8) -> Result<core::MessageKind, JsError> {
         3 => Ping,
         4 => KeyDrop,
         5 => Burn,
+        6 => Position,
+        7 => Field,
+        8 => Eidetic,
+        9 => Social,
         _ => return Err(JsError::new("unknown message kind")),
     })
 }
@@ -114,6 +118,10 @@ fn kind_to(k: core::MessageKind) -> u8 {
         Ping => 3,
         KeyDrop => 4,
         Burn => 5,
+        Position => 6,
+        Field => 7,
+        Eidetic => 8,
+        Social => 9,
     }
 }
 
@@ -275,4 +283,150 @@ pub fn decode_device_certificate(certificate: Vec<u8>) -> Result<CertInfo, JsErr
         not_after_ms: c.not_after_ms as f64,
         ca_key_id: c.ca_key_id,
     })
+}
+
+// ---- ÆTHER Talk messenger events (MessageKind 9) ------------------------------------------------
+
+/// A Talk event: message, edit, delete, reaction, read, typing, group, leave, file offer/chunk,
+/// timer, pin or wipe. `kind` is the wire code ("msg", "edit", "del", "react", "read", "typing",
+/// "group", "leave", "file", "chunk", "timer", "pin", "wipe"); `precedence` is "R", "P", "O" or "Z".
+#[wasm_bindgen(getter_with_clone)]
+#[derive(Clone)]
+pub struct Social {
+    pub kind: String,
+    pub id: String,
+    pub target: String,
+    #[wasm_bindgen(js_name = groupId)]
+    pub group_id: String,
+    pub text: String,
+    #[wasm_bindgen(js_name = replyTo)]
+    pub reply_to: String,
+    pub forwarded: bool,
+    pub flag: bool,
+    #[wasm_bindgen(js_name = expiresS)]
+    pub expires_s: u32,
+    pub members: Vec<String>,
+    pub mime: String,
+    pub size: f64,
+    pub sha256: String,
+    pub index: u32,
+    pub total: u32,
+    pub precedence: String,
+    pub admins: Vec<String>,
+    pub channel: bool,
+}
+
+const SOCIAL_KINDS: [(&str, core::SocialKind); 13] = [
+    ("msg", core::SocialKind::Message),
+    ("edit", core::SocialKind::Edit),
+    ("del", core::SocialKind::Delete),
+    ("react", core::SocialKind::React),
+    ("read", core::SocialKind::Read),
+    ("typing", core::SocialKind::Typing),
+    ("group", core::SocialKind::Group),
+    ("leave", core::SocialKind::Leave),
+    ("file", core::SocialKind::FileOffer),
+    ("chunk", core::SocialKind::FileChunk),
+    ("timer", core::SocialKind::Timer),
+    ("pin", core::SocialKind::Pin),
+    ("wipe", core::SocialKind::Wipe),
+];
+
+const PRECEDENCE: [(&str, core::Precedence); 4] = [
+    ("R", core::Precedence::Routine),
+    ("P", core::Precedence::Priority),
+    ("O", core::Precedence::Immediate),
+    ("Z", core::Precedence::Flash),
+];
+
+#[wasm_bindgen]
+impl Social {
+    #[wasm_bindgen(constructor)]
+    pub fn new(kind: String) -> Social {
+        Social {
+            kind,
+            id: String::new(),
+            target: String::new(),
+            group_id: String::new(),
+            text: String::new(),
+            reply_to: String::new(),
+            forwarded: false,
+            flag: false,
+            expires_s: 0,
+            members: Vec::new(),
+            mime: String::new(),
+            size: 0.0,
+            sha256: String::new(),
+            index: 0,
+            total: 0,
+            precedence: "R".into(),
+            admins: Vec::new(),
+            channel: false,
+        }
+    }
+}
+
+fn to_core(s: &Social) -> Result<core::SocialEvent, JsError> {
+    let kind = SOCIAL_KINDS.iter().find(|(c, _)| *c == s.kind).map(|(_, k)| *k).ok_or_else(|| JsError::new("unknown Talk event kind"))?;
+    let precedence = PRECEDENCE.iter().find(|(c, _)| *c == s.precedence).map(|(_, p)| *p).ok_or_else(|| JsError::new("unknown precedence"))?;
+    if !(s.size >= 0.0 && s.size <= 9.0e15) {
+        return Err(JsError::new("bad size"));
+    }
+    let mut e = core::social_event(kind);
+    e.id = s.id.clone();
+    e.target = s.target.clone();
+    e.group_id = s.group_id.clone();
+    e.text = s.text.clone();
+    e.reply_to = s.reply_to.clone();
+    e.forwarded = s.forwarded;
+    e.flag = s.flag;
+    e.expires_s = s.expires_s;
+    e.members = s.members.clone();
+    e.mime = s.mime.clone();
+    e.size = s.size as u64;
+    e.sha256 = s.sha256.clone();
+    e.index = s.index;
+    e.total = s.total;
+    e.precedence = precedence;
+    e.admins = s.admins.clone();
+    e.channel = s.channel;
+    Ok(e)
+}
+
+fn from_core(e: core::SocialEvent) -> Social {
+    Social {
+        kind: SOCIAL_KINDS.iter().find(|(_, k)| *k == e.kind).map(|(c, _)| (*c).to_owned()).unwrap_or_default(),
+        id: e.id,
+        target: e.target,
+        group_id: e.group_id,
+        text: e.text,
+        reply_to: e.reply_to,
+        forwarded: e.forwarded,
+        flag: e.flag,
+        expires_s: e.expires_s,
+        members: e.members,
+        mime: e.mime,
+        size: e.size as f64,
+        sha256: e.sha256,
+        index: e.index,
+        total: e.total,
+        precedence: PRECEDENCE.iter().find(|(_, p)| *p == e.precedence).map(|(c, _)| (*c).to_owned()).unwrap_or_else(|| "R".into()),
+        admins: e.admins,
+        channel: e.channel,
+    }
+}
+
+#[wasm_bindgen(js_name = encodeSocial)]
+pub fn encode_social(event: &Social) -> Result<String, JsError> {
+    core::encode_social(to_core(event)?).map_err(err)
+}
+
+#[wasm_bindgen(js_name = decodeSocial)]
+pub fn decode_social(body: String) -> Result<Social, JsError> {
+    core::decode_social(body).map(from_core).map_err(err)
+}
+
+#[wasm_bindgen(js_name = socialChunkCount)]
+pub fn social_chunk_count(size: f64) -> u32 {
+    core::social_chunk_count(size.max(0.0) as u64)
 }
