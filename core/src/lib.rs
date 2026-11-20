@@ -30,7 +30,10 @@ mod hello;
 mod identity;
 mod keydrop;
 mod nav;
+mod outbox;
+mod revocation;
 mod session;
+mod tak;
 mod vault;
 
 pub use audit::{audit_append, audit_verify, AuditEntry};
@@ -69,6 +72,7 @@ pub use nav::{
     UtmCoordinate,
 };
 pub use keydrop::{decode_key_drop, encode_key_drop, suggest_codename, KeyDrop};
+pub use revocation::{revocation_status, RevocationStatus};
 pub use session::{Handshake, Session, LATEST_PROTOCOL, NOISE_PARAMS, NOISE_PARAMS_V2, PROLOGUE, PROLOGUE_V2};
 pub use vault::Vault;
 

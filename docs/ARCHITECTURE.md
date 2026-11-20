@@ -92,6 +92,8 @@ message 3 (its identity is never revealed to a refused peer) and the responder d
 after message 3. Burner sessions never send a certificate and aren't subject to "require".
 Revocation is checked by `aether-ca verify --online`, not yet by devices during the handshake.
 
+**Offline revocation snapshots.** `aether-ca snapshot` writes a raw `AETHER-CRL/1` file signed by the CA Ed25519 key with `verify_strict`. `revocation_status` answers whether a 16-byte serial is in that file. It does not replace `verify_device_certificate`. Devices do not load the file. A later switch would verify the certificate first and refuse every snapshot status other than not-revoked. The snapshot is not a FIPS validation and not an accreditation.
+
 ## Storage (ÆTHER Vault™)
 
 `Vault` is an append-only file: `MAGIC ‖ vault_id ‖ key-check ‖ records`. Each record is

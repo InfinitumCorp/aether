@@ -1,0 +1,19 @@
+name: test-foundation
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo test --manifest-path core/Cargo.toml
+      - run: 'cargo test --manifest-path core/Cargo.toml -- tak::'
+      - run: cargo test --manifest-path web/wasm/Cargo.toml
+      - run: node --test web/app/inbound-kind.test.mjs
+      - run: grep -F "6 position, 7 field" web/app/pkg/aether_web.js

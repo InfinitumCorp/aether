@@ -1,0 +1,13 @@
+name: test-tak
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  tak-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: TAK lab fixtures
+        run: 'cargo test --manifest-path core/Cargo.toml -- tak::'

@@ -176,6 +176,27 @@ impl CertificateAuthority {
     }
 }
 
+impl CertificateAuthority {
+    /// Signs an `AETHER-CRL/1` snapshot. The file bytes are the return value. No network.
+    /// Not exported through UniFFI: devices do not load snapshots in this cycle.
+    pub fn sign_revocation_snapshot(
+        &self,
+        issued_at_ms: u64,
+        expires_at_ms: u64,
+        serials: &[[u8; 16]],
+    ) -> Result<Vec<u8>, AetherError> {
+        let mut body = crate::revocation::canonical_body(
+            &self.key.verifying_key().to_bytes(),
+            issued_at_ms,
+            expires_at_ms,
+            serials,
+        )?;
+        let sig = self.key.sign(&body);
+        body.extend_from_slice(&sig.to_bytes());
+        Ok(body)
+    }
+}
+
 /// Parses a certificate without checking its signature (for display only).
 #[uniffi::export]
 pub fn decode_device_certificate(certificate: Vec<u8>) -> Result<DeviceCertificate, AetherError> {

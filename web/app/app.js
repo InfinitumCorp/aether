@@ -1,6 +1,7 @@
 // ÆTHER MIL Web: browser client. All cryptography runs in the ÆTHER Rust core (WebAssembly);
 // this file moves opaque byte buffers between the bridge, the core and the page.
 import init, * as core from './pkg/aether_web.js';
+import { classifyInboundKind } from './inbound-kind.mjs';
 
 const KIND = { TEXT: 1, RECEIPT: 2, PING: 3, DROP: 4, BURN: 5 };
 const $ = (id) => document.getElementById(id);
@@ -164,8 +165,10 @@ function adopt(k, fs, session, cert) {
       try { f = await fs.next(1e9); } catch { break; }
       let m;
       try { m = session.decrypt(f); } catch { fs.close(); break; } // authentication failure: drop the link
-      if (m.kind === KIND.TEXT) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body });
-      else if (m.kind === KIND.DROP) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body, drop: true });
+      if (classifyInboundKind(m.kind) === 'store') {
+        if (m.kind === KIND.TEXT) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body });
+        else if (m.kind === KIND.DROP) addMsg(k, { o: false, ts: m.sentAtMs, body: m.body, drop: true });
+      }
       refresh(k);
     }
   })();
