@@ -10,4 +10,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: TAK lab fixtures
-        run: cargo test --manifest-path core/Cargo.toml -- tak::
+        run: 'cargo test --manifest-path core/Cargo.toml -- tak::'

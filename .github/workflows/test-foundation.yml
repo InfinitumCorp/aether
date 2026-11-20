@@ -13,7 +13,7 @@ jobs:
         with:
           node-version: 22
       - run: cargo test --manifest-path core/Cargo.toml
-      - run: cargo test --manifest-path core/Cargo.toml -- tak::
+      - run: 'cargo test --manifest-path core/Cargo.toml -- tak::'
       - run: cargo test --manifest-path web/wasm/Cargo.toml
       - run: node --test web/app/inbound-kind.test.mjs
       - run: grep -F "6 position, 7 field" web/app/pkg/aether_web.js
