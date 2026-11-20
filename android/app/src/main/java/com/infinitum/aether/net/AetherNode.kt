@@ -383,11 +383,23 @@ class AetherNode(private val context: Context, private val store: Store, val pro
         }
         setState(convo, LinkState.ONLINE)
         _events.value = "Secure session with ${link.peerName}" + (local.id?.let { " via ${formatNumber(numberOf(it))}" } ?: "")
+        for (queued in drainPending(convo)) {
+            runCatching { link.send(ChatMessage(MessageKind.TEXT, System.currentTimeMillis().toULong(), queued)) }
+                .onFailure { Log.w(TAG, "queued send failed") }
+        }
         try {
             while (true) {
                 val msg = link.receive()
                 when (msg.kind) {
-                    MessageKind.TEXT -> record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id))
+                    MessageKind.TEXT -> {
+                        record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, via = local.id))
+                        val ack = msg.sentAtMs.toString()
+                        if (ack.all { it.isDigit() }) {
+                            runCatching {
+                                link.send(ChatMessage(MessageKind.RECEIPT, System.currentTimeMillis().toULong(), ack))
+                            }
+                        }
+                    }
                     MessageKind.KEY_DROP -> if (runCatching { decodeKeyDrop(msg.body) }.isSuccess) {
                         record(StoredMessage(key, false, msg.sentAtMs.toLong(), msg.body, drop = true, via = local.id))
                     } else {
@@ -452,12 +464,34 @@ class AetherNode(private val context: Context, private val store: Store, val pro
             }.onFailure { Log.w(TAG, "send $tag failed", it) }
         }
 
+    /** Texts accepted while the peer is offline, flushed when the session comes up. Cap matches core `MAX_QUEUED`. */
+    private val pending = java.util.LinkedHashMap<String, ArrayDeque<String>>()
+
+    private fun enqueuePending(convo: String, text: String) {
+        synchronized(pending) {
+            val q = pending.getOrPut(convo) { ArrayDeque() }
+            if (q.size >= 100) q.removeFirst()
+            q.addLast(text)
+        }
+    }
+
+    private fun drainPending(convo: String): List<String> = synchronized(pending) {
+        pending.remove(convo)?.toList() ?: emptyList()
+    }
+
     /** Conversations with a live session, for "share to" pickers. */
     fun onlineConvos(): List<String> = links.keys.toList()
 
     suspend fun send(convo: String, text: String): Boolean = withContext(Dispatchers.IO) {
-        val live = links[convo] ?: return@withContext false
+        if (text.isEmpty()) return@withContext false
         val now = System.currentTimeMillis()
+        val live = links[convo]
+        if (live == null) {
+            val peer = _contacts.value[convo]?.keyHex ?: return@withContext false
+            enqueuePending(convo, text)
+            record(StoredMessage(peer, true, now, text, via = _contacts.value[convo]?.via))
+            return@withContext true
+        }
         try {
             live.link.send(ChatMessage(MessageKind.TEXT, now.toULong(), text))
             record(StoredMessage(live.link.remoteKey.toHex(), true, now, text, via = live.local.id))

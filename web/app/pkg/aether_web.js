@@ -837,7 +837,7 @@ export class Hello {
     set certificate(arg0) {
         const ptr0 = passArray8ToWasm0(arg0, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.__wbg_set_drop_name(this.__wbg_ptr, ptr0, len0);
+        wasm.__wbg_set_hello_certificate(this.__wbg_ptr, ptr0, len0);
     }
 }
 
@@ -949,7 +949,7 @@ export class Message {
         wasm.__wbg_message_free(ptr, 0);
     }
     /**
-     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field.
      * @returns {number}
      */
     get kind() {
@@ -957,7 +957,7 @@ export class Message {
         return ret;
     }
     /**
-     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+     * 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field.
      * @param {number} arg0
      */
     set kind(arg0) {
@@ -1095,7 +1095,7 @@ export class PeerCert {
     set profile(arg0) {
         const ptr0 = passStringToWasm0(arg0, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        wasm.__wbg_set_drop_publicKey(this.__wbg_ptr, ptr0, len0);
+        wasm.__wbg_set_peercert_profile(this.__wbg_ptr, ptr0, len0);
     }
     /**
      * @returns {string}

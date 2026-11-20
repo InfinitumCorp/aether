@@ -87,14 +87,14 @@ impl Handshake {
 /// A decrypted envelope.
 #[wasm_bindgen(getter_with_clone)]
 pub struct Message {
-    /// 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn.
+    /// 1 text, 2 receipt, 3 ping, 4 key drop, 5 burn, 6 position, 7 field.
     pub kind: u8,
     #[wasm_bindgen(js_name = sentAtMs)]
     pub sent_at_ms: f64,
     pub body: String,
 }
 
-fn kind_from(k: u8) -> Result<core::MessageKind, JsError> {
+fn kind_from(k: u8) -> Result<core::MessageKind, &'static str> {
     use core::MessageKind::*;
     Ok(match k {
         1 => Text,
@@ -102,7 +102,9 @@ fn kind_from(k: u8) -> Result<core::MessageKind, JsError> {
         3 => Ping,
         4 => KeyDrop,
         5 => Burn,
-        _ => return Err(JsError::new("unknown message kind")),
+        6 => Position,
+        7 => Field,
+        _ => return Err("unknown message kind"),
     })
 }
 
@@ -114,6 +116,8 @@ fn kind_to(k: core::MessageKind) -> u8 {
         Ping => 3,
         KeyDrop => 4,
         Burn => 5,
+        Position => 6,
+        Field => 7,
     }
 }
 
@@ -123,7 +127,7 @@ pub struct Session(Arc<core::Session>);
 #[wasm_bindgen]
 impl Session {
     pub fn encrypt(&self, kind: u8, sent_at_ms: f64, body: String) -> Result<Vec<u8>, JsError> {
-        let m = core::ChatMessage { kind: kind_from(kind)?, sent_at_ms: sent_at_ms as u64, body };
+        let m = core::ChatMessage { kind: kind_from(kind).map_err(JsError::new)?, sent_at_ms: sent_at_ms as u64, body };
         self.0.encrypt(m).map_err(err)
     }
     pub fn decrypt(&self, frame: Vec<u8>) -> Result<Message, JsError> {
@@ -275,4 +279,42 @@ pub fn decode_device_certificate(certificate: Vec<u8>) -> Result<CertInfo, JsErr
         not_after_ms: c.not_after_ms as f64,
         ca_key_id: c.ca_key_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pair() -> (Session, Session) {
+        let a = Identity::generate();
+        let b = Identity::generate();
+        let i = Handshake::initiator(&a).unwrap();
+        let r = Handshake::responder(&b).unwrap();
+        let m1 = i.write_message(vec![]).unwrap();
+        r.read_message(m1).unwrap();
+        let m2 = r.write_message(b"bob".to_vec()).unwrap();
+        i.read_message(m2).unwrap();
+        let m3 = i.write_message(b"alice".to_vec()).unwrap();
+        r.read_message(m3).unwrap();
+        (i.finish().unwrap(), r.finish().unwrap())
+    }
+
+    #[test]
+    fn kinds_six_and_seven_round_trip_and_unknown_kind_fails() {
+        let (a, b) = pair();
+        for kind in [6u8, 7] {
+            let frame = a.encrypt(kind, 1.0, "lab".into()).unwrap();
+            let m = b.decrypt(frame).unwrap();
+            assert_eq!(m.kind, kind);
+            assert_eq!(m.body, "lab");
+            assert_eq!(m.sent_at_ms, 1.0);
+        }
+        let (a, b) = pair();
+        let frame = a.encrypt(1, 2.0, "hi".into()).unwrap();
+        let m = b.decrypt(frame).unwrap();
+        assert_eq!(m.kind, 1);
+        assert_eq!(m.body, "hi");
+        // JsError::new aborts off wasm, so the host check is the plain error from kind_from.
+        assert!(kind_from(99).is_err());
+    }
 }

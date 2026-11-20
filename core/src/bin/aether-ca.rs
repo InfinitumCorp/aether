@@ -183,7 +183,7 @@ fn cert_json(c: &DeviceCertificate, extra: &str) -> String {
 }
 
 fn run(args: &[String]) -> Result<String, String> {
-    let cmd = args.first().ok_or("usage: aether-ca init|sign|verify|info|register-ca|revoke|status [flags]")?;
+    let cmd = args.first().ok_or("usage: aether-ca init|sign|verify|info|register-ca|revoke|status|snapshot [flags]")?;
     let mut flags = HashMap::new();
     let mut it = args[1..].iter();
     while let Some(k) = it.next() {
@@ -273,6 +273,31 @@ fn run(args: &[String]) -> Result<String, String> {
             let c = decode_device_certificate(unhex(&need("cert")?)?).map_err(|e| e.to_string())?;
             Ok(cert_json(&c, ""))
         }
+        "snapshot" => {
+            let ca = load_ca(&need("key")?)?;
+            let issued_at: u64 = need("issued-at")?.parse().map_err(|_| "revocation snapshot is malformed".to_string())?;
+            let expires_at: u64 = need("expires-at")?.parse().map_err(|_| "revocation snapshot is malformed".to_string())?;
+            let mut text = std::fs::read_to_string(need("serials")?).map_err(|_| "revocation snapshot is malformed".to_string())?;
+            if text.ends_with('\n') {
+                text.pop();
+            }
+            let mut serials = Vec::new();
+            if !text.is_empty() {
+                for line in text.split('\n') {
+                    if line.is_empty() {
+                        return Err("revocation snapshot is malformed".into());
+                    }
+                    let raw = unhex(line).map_err(|_| "revocation snapshot is malformed".to_string())?;
+                    let serial: [u8; 16] = raw.as_slice().try_into().map_err(|_| "revocation snapshot is malformed".to_string())?;
+                    serials.push(serial);
+                }
+            }
+            let bytes = ca
+                .sign_revocation_snapshot(issued_at, expires_at, &serials)
+                .map_err(|_| "revocation snapshot is malformed".to_string())?;
+            std::fs::write(need("out")?, &bytes).map_err(|_| "revocation snapshot is malformed".to_string())?;
+            Ok("wrote snapshot".into())
+        }
         other => Err(format!("unknown command {other:?}")),
     }
 }
@@ -293,7 +318,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::json_string_field;
+    use super::{hex, json_string_field, run};
 
     #[test]
     fn reads_status_from_compact_and_spaced_json() {
@@ -311,5 +336,41 @@ mod tests {
     fn missing_or_non_string_is_none() {
         assert_eq!(json_string_field(r#"{"label":"A"}"#, "status"), None);
         assert_eq!(json_string_field(r#"{"status":null}"#, "status"), None);
+    }
+
+    #[test]
+    fn snapshot_writes_raw_file_and_refuses_unsorted_serials() {
+        use aether_core::{revocation_status, CertificateAuthority, RevocationStatus};
+        let dir = tempfile::tempdir().unwrap();
+        let ca = CertificateAuthority::generate();
+        let key_path = dir.path().join("ca.key");
+        std::fs::write(&key_path, hex(&ca.export_secret())).unwrap();
+        let serials = dir.path().join("serials.txt");
+        std::fs::write(&serials, "").unwrap();
+        let out = dir.path().join("snap.bin");
+        let args = vec![
+            "snapshot".into(),
+            "--key".into(),
+            key_path.display().to_string(),
+            "--serials".into(),
+            serials.display().to_string(),
+            "--issued-at".into(),
+            "1000".into(),
+            "--expires-at".into(),
+            "9000".into(),
+            "--out".into(),
+            out.display().to_string(),
+        ];
+        assert_eq!(run(&args).unwrap(), "wrote snapshot");
+        let bytes = std::fs::read(&out).unwrap();
+        assert!(bytes.starts_with(b"AETHER-CRL/1"));
+        assert_eq!(bytes.len(), 104);
+        let pk: [u8; 32] = ca.public_key().try_into().unwrap();
+        assert_eq!(revocation_status([0u8; 16], &bytes, &[pk], 1500), RevocationStatus::NotRevoked);
+
+        std::fs::write(&serials, "02000000000000000000000000000000\n01000000000000000000000000000000\n").unwrap();
+        let err = run(&args).unwrap_err();
+        assert_eq!(err, "revocation snapshot is malformed");
+        assert!(!err.contains("0200"));
     }
 }
