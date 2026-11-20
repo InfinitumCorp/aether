@@ -34,7 +34,7 @@ quick-xml = "0.37.5"
 ureq = { version = "2.12.1", default-features = false, features = ["tls"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-zip = { version = "=2.3.0", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3.14.0"
